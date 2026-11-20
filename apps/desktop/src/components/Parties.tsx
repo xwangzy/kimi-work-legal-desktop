@@ -1,0 +1,117 @@
+/**
+ * 当事人词典（第 02 篇 §8.3：自然人姓名识别靠当事人词典 + 实体识别，L3a 事项须人工核对词典；阶段 4 复核 S4-20）：
+ * 确认的别名、从材料“以下简称”学得的待确认别名（照常参与匹配，请确认或驳回）、机构名称自动派生的字号（可停用）、已停用的写法（可撤销）。
+ */
+import { ConfirmButton } from "./ConfirmButton.tsx";
+import { useCallback, useEffect, useState } from "react";
+import { api } from "../api.ts";
+import { Select } from "./Select.tsx";
+
+interface PartyView {
+  name: string;
+  kind: "person" | "org";
+  aliases: string[];
+  learned: string[];
+  derived: string[];
+  excluded: string[];
+  role: string | null;
+  source: "matter_header" | "dictionary";
+}
+
+export function PartiesPanel({ matterId, onChanged, readOnly = false }: { matterId: string; onChanged?: () => void; readOnly?: boolean }) {
+  const [parties, setParties] = useState<PartyView[] | null>(null);
+  const [fullPseudonym, setFullPseudonym] = useState(false);
+  const [draft, setDraft] = useState({ name: "", kind: "person" as "person" | "org", aliases: "" });
+  const [err, setErr] = useState("");
+  const load = useCallback(() => {
+    api
+      .parties(matterId)
+      .then((r: any) => {
+        setParties(r.parties as PartyView[]);
+        setFullPseudonym(!!r.full_pseudonym);
+      })
+      .catch((e) => setErr(e.message));
+  }, [matterId]);
+  useEffect(load, [load]);
+  const act = async (fn: () => Promise<unknown>) => {
+    setErr("");
+    try {
+      await fn();
+      load();
+      onChanged?.();
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  };
+  const alias = (name: string, a: string, action: "confirm" | "reject" | "restore") => act(() => api.partyAlias(matterId, name, a, action));
+  return (
+    // 结案事项只读（复核 C-B11）：fieldset disabled 让其中所有按钮与输入不可用
+    <fieldset className="parties fieldset-plain" disabled={readOnly}>
+      <p className="muted">
+        名单里的名称和别名，发给 AI 或联网查询前都会换成代号（个人姓名一律换；公司名称{fullPseudonym ? "在本事项也换（已开启全部化名）" : "默认保留，开启“全部化名”后也换"}）。
+        没识别出来的姓名会按原文发出——请核对名单，尤其是敏感事项。
+      </p>
+      {err && <div className="banner banner-red">{err}</div>}
+      <table className="data">
+        <thead><tr><th>名称</th><th>类型</th><th>别名</th><th>AI 发现的别名（待你确认）</th><th>自动生成的简称</th><th>已停用</th><th /></tr></thead>
+        <tbody>
+          {(parties ?? []).map((p) => (
+            <tr key={p.name}>
+              <td><b>{p.name}</b>{p.source === "matter_header" ? <small className="muted">（建事项时填写）</small> : null}</td>
+              <td>{p.kind === "person" ? "自然人" : "机构"}</td>
+              <td>{p.aliases.join("、") || "—"}</td>
+              <td>
+                {p.learned.length === 0 ? "—" : p.learned.map((a) => (
+                  <span key={a} className="alias-chip alias-pending">
+                    {a}
+                    <button onClick={() => void alias(p.name, a, "confirm")}>确认</button>
+                    <button onClick={() => void alias(p.name, a, "reject")}>驳回</button>
+                  </span>
+                ))}
+              </td>
+              <td>
+                {p.derived.length === 0 ? "—" : p.derived.map((a) => (
+                  <span key={a} className="alias-chip">
+                    {a}
+                    <ConfirmButton label="停用" className="btn-link btn-danger" question={`停用后“${a}”不再换成代号，之后发出的内容可能带这个简称。`} confirmLabel="确定停用" onConfirm={() => alias(p.name, a, "reject")} />
+                  </span>
+                ))}
+              </td>
+              <td>
+                {p.excluded.length === 0 ? "—" : p.excluded.map((a) => (
+                  <span key={a} className="alias-chip alias-off">
+                    {a}
+                    <button onClick={() => void alias(p.name, a, "restore")}>撤销</button>
+                  </span>
+                ))}
+              </td>
+              <td>
+                {p.source === "dictionary" && (
+                  <ConfirmButton label="删除" className="btn-link btn-danger" question={`删除后“${p.name}”不再换成代号，之后发出的内容可能带这个名称。`} confirmLabel="确定删除" onConfirm={() => act(() => api.removeParty(matterId, p.name))} />
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="party-add">
+        <input placeholder="名称（关联方、证人、员工等）" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
+        <Select aria-label="类型" value={draft.kind} onChange={(v) => setDraft({ ...draft, kind: v as "person" | "org" })} options={[{ value: "person", label: "自然人" }, { value: "org", label: "机构" }]} />
+        <input placeholder="别名（顿号分隔，可空）" value={draft.aliases} onChange={(e) => setDraft({ ...draft, aliases: e.target.value })} />
+        <button
+          className="btn-ghost"
+          disabled={draft.name.trim().length < 2}
+          onClick={() =>
+            void act(async () => {
+              await api.upsertParty(matterId, { name: draft.name.trim(), kind: draft.kind, aliases: draft.aliases.split(/[、,，;；\s]+/).map((s) => s.trim()).filter(Boolean) });
+              setDraft({ name: "", kind: "person", aliases: "" });
+            })
+          }
+        >
+          加入词典
+        </button>
+      </div>
+    </fieldset>
+  );
+}
+

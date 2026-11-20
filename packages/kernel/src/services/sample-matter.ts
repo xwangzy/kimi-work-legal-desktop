@@ -1,0 +1,100 @@
+/**
+ * 示例事项（v9.2 §4.4；调研 Y4 §5 D-6、清单 #24）：一件**虚构**的“甲公司股权转让（受让方）”——合成的 DOCX 协议与三张示例风险卡，
+ * 全部在本机生成、不调用模型、不联网；律师可以在审查工作台逐张决定并生成修订稿，熟悉流程。
+ * 每台设备只自动放入一次（移除后不再放入）；名称、条款与当事人均为虚构。
+ */
+import { createDocx } from "@zr-legal/docx-engine";
+import { DomainError } from "@zr-legal/domain";
+import type { KernelDb } from "../db.ts";
+
+export const SAMPLE_TITLE = "示例 · 甲公司股权转让（受让方）";
+export const SAMPLE_FILENAME = "示例-股权转让协议.docx";
+
+export function sampleContract(): Buffer {
+  return createDocx("股权转让协议（示例，内容虚构）", [
+    { heading: "第一条 当事人", paragraphs: ["转让方：甲科技有限公司（示例）", "受让方：乙投资有限公司（示例）", "目标公司：丙数据服务有限公司（示例）"] },
+    { heading: "第二条 转让价款与支付", paragraphs: ["2.1 目标股权的转让价款为人民币壹仟万元。", "2.2 受让方应于协议签署后五日内一次性支付全部价款。"] },
+    { heading: "第五条 陈述与保证", paragraphs: ["5.1 转让方保证目标公司不存在未向受让方披露的债务或担保。"] },
+    { heading: "第七条 违约责任", paragraphs: ["7.1 受让方逾期付款的，每日按应付未付金额的千分之五支付违约金。", "7.2 转让方违反陈述与保证的，应赔偿受让方因此遭受的直接损失。"] },
+    { heading: "第九条 争议解决", paragraphs: ["9.1 本协议项下的任何争议，提交转让方所在地人民法院诉讼解决。"] },
+    // 示例合同不是律所出具的文件：不带本产品标记，下载它的修订稿时不套函头（B-4）
+  ], { mark: false });
+}
+
+/** 三张示例风险卡（受让方立场；锚点为协议逐字原文）。 */
+export const SAMPLE_CARDS = [
+  {
+    clause_ref: "2.2",
+    anchor_text: "受让方应于协议签署后五日内一次性支付全部价款",
+    severity: "high",
+    category: "both",
+    issue: "价款在股权变更登记之前一次性付清：若之后无法完成变更登记，受让方要先付款再追讨，风险全部在受让方。",
+    nature: "should",
+    suggestion: "受让方应于目标股权变更登记完成后五个工作日内支付全部价款",
+    fallback: "协议签署后支付百分之三十，变更登记完成后支付其余百分之七十",
+    bottom_line: "协议签署后支付不超过百分之五十，且转让方提供等额担保",
+  },
+  {
+    clause_ref: "7.1",
+    anchor_text: "每日按应付未付金额的千分之五支付违约金",
+    severity: "mid",
+    category: "legal",
+    issue: "逾期付款违约金按日千分之五计，明显偏高，且与转让方违约时只赔“直接损失”不对等。",
+    nature: "should",
+    suggestion: "每日按应付未付金额的万分之三支付违约金，累计不超过应付未付金额的百分之十",
+    fallback: "每日按应付未付金额的万分之五支付违约金，累计不超过应付未付金额的百分之二十",
+  },
+  {
+    clause_ref: "9.1",
+    anchor_text: "提交转让方所在地人民法院诉讼解决",
+    severity: "low",
+    category: "commercial",
+    issue: "管辖法院约定在转让方所在地，受让方诉讼成本较高。是否争取需由客户决定。",
+    nature: "negotiable",
+    suggestion: "提交受让方所在地人民法院诉讼解决",
+    fallback: "提交被告所在地人民法院诉讼解决",
+    bottom_line: "接受转让方所在地法院管辖，但约定双方的送达地址与电子送达方式",
+    needs_client_decision: true,
+  },
+] as const;
+
+/**
+ * 诉讼线示例事项（v9.3 评审 Z3 §8 P2 #27；D-6 补）：一件**虚构**的“买卖合同纠纷（原告）”——卖方起诉买方追讨货款。
+ * 四份合成材料（合同、送货签收单、对账确认函、往来函件）在本机生成；放入后在本机按规则跑一次“整理案卷”（不调用 AI），
+ * 律师打开即可看到证据目录、事实时间轴与争点框架，并可在“事实”里逐条确认、接着试“争点与证据分析”“案情分析与诉讼策略”。
+ * 往来函件里买方提出了质量异议——留一个真实的争点。名称、金额与日期均为虚构。
+ */
+export const LIT_SAMPLE_TITLE = "示例 · 买卖合同纠纷（原告）";
+export const LIT_SAMPLE_ISSUES = ["货款是否已届付款期", "被告的质量异议是否成立", "逾期付款违约金如何计算"];
+
+export function litigationSampleMaterials(): Array<{ filename: string; data: Buffer }> {
+  const doc = (filename: string, title: string, sections: Array<{ heading: string; paragraphs: string[] }>) => ({ filename, data: createDocx(title, sections, { mark: false }) });
+  return [
+    doc("示例-买卖合同.docx", "工业传感器买卖合同（示例，内容虚构）", [
+      { heading: "第一条 当事人", paragraphs: ["卖方：丁贸易有限公司（示例）", "买方：戊制造有限公司（示例）", "本合同于2025年3月10日签订。"] },
+      { heading: "第二条 货物与价款", paragraphs: ["2.1 合同总价款人民币1,200,000元（工业传感器2000套）。", "2.2 卖方应于2025年4月30日前将货物送至买方仓库。"] },
+      { heading: "第三条 验收", paragraphs: ["3.1 买方应于收货后7日内验收；有质量异议的，应在该期限内书面提出，逾期未提出的视为验收合格。"] },
+      { heading: "第四条 付款", paragraphs: ["4.1 买方应于验收合格后30日内付清全部货款。", "4.2 买方逾期付款的，每日按应付未付金额的万分之五支付违约金。"] },
+      { heading: "第八条 争议解决", paragraphs: ["8.1 因本合同发生的争议，由卖方所在地人民法院管辖。"] },
+    ]),
+    doc("示例-送货签收单.docx", "送货签收单（示例，内容虚构）", [
+      { heading: "", paragraphs: ["送货日期：2025年4月25日", "收货单位：戊制造有限公司（示例）", "货物：工业传感器2000套，外观完好，数量无误。", "收货单位盖章：戊制造有限公司仓储部收货专用章（示例）"] },
+    ]),
+    doc("示例-对账确认函.docx", "对账确认函（示例，内容虚构）", [
+      { heading: "", paragraphs: ["致丁贸易有限公司（示例）：", "我司已于2025年6月20日支付货款人民币200,000元。", "经核对，截至2025年7月15日，我司尚欠贵司货款人民币1,000,000元。", "戊制造有限公司（示例）（盖章）"] },
+    ]),
+    doc("示例-往来函件.docx", "往来函件（示例，内容虚构）", [
+      { heading: "一、催款函", paragraphs: ["2025年9月1日，丁贸易有限公司（示例）致函戊制造有限公司（示例），要求其在收函后15日内支付剩余货款人民币1,000,000元及逾期付款违约金。"] },
+      { heading: "二、回函", paragraphs: ["2025年9月10日，戊制造有限公司（示例）回函称：部分传感器在使用中出现读数漂移，存在质量问题，待质量问题解决后再行付款。回函未附检测报告。"] },
+    ]),
+  ];
+}
+
+/**
+ * 示例事项只读（复核 Q4 建议 3：原来只有界面做了）：事项的阶段与事件时点、待办、审查要点、提醒不能在示例事项上改——
+ * 示例随时可删，写进去的东西会跟着没了；提醒还会交 Kimi Work 提醒服务送达。看材料、发起任务、核对照常。
+ */
+export function assertNotSample(db: KernelDb, matterId: string, what: string): void {
+  if (db.get(`SELECT 1 AS x FROM sample_matters WHERE matter_id = ? AND removed_at IS NULL`, [matterId]))
+    throw new DomainError("validation", `示例事项只用来看效果，不能${what}：请新建一个事项`, 422);
+}

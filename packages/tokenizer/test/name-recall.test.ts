@@ -1,0 +1,299 @@
+/**
+ * 自然人姓名识别召回（第 04 篇 §11 P6：“自然人姓名识别召回在合成测试集上报告（漏识别如实列出）”；第 06 篇 R14）。
+ *
+ * 合成集：确定性伪随机生成的姓名（姓氏表 × 常见名字用字，不对应真实人物）放进典型法律文书语境；每类语境分别统计召回，
+ * 漏识别逐条列出。阈值只约束“有上下文”的类别；“无上下文、不在词典”的类别是已知盲区，只报告不设阈值——这正是方案要求
+ * L3a 事项人工核对当事人词典的原因。另测机构名称（以姓氏字开头）不被误判为自然人。
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { MatterTokenizer } from "../src/index.ts";
+
+/** 确定性 PRNG（mulberry32）。 */
+function rng(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const SURNAMES = [..."王李张刘陈杨黄赵吴周徐孙马朱胡郭何高林罗郑梁谢宋唐许韩冯邓曹彭曾肖田董袁潘蒋蔡余杜叶程苏魏吕丁任沈姚卢姜崔钟谭陆汪范金石廖贾夏韦方白邹孟熊秦邱江尹薛段雷侯龙史陶黎贺顾毛郝龚邵万钱严武戴莫孔汤常温康施牛樊葛邢齐易乔伍庞颜倪庄聂章鲁岳翟殷詹耿关焦俞左柳甘祝包宁尚舒阮柯纪梅童凌毕季裴霍涂苗谷盛曲翁骆蓝游辛靳管柴鲍华喻祁房滕屈饶牟艾"];
+const COMPOUNDS = ["欧阳", "司马", "上官", "诸葛", "皇甫", "慕容", "令狐", "司徒"];
+const GIVEN = [..."伟芳娜敏静丽强磊军洋勇艳杰娟涛明超秀霞平刚桂英华玉兰萍红鹏辉建斌宇浩凯健俊帆帅旭宁玲婷雪琳晶颖倩琪蕾薇志国峰波晨阳欣怡佳慧梓涵子轩雨萱思远嘉懿博文"];
+
+function makeName(r: () => number): string {
+  const compound = r() < 0.06;
+  const s = compound ? COMPOUNDS[Math.floor(r() * COMPOUNDS.length)]! : SURNAMES[Math.floor(r() * SURNAMES.length)]!;
+  const len = r() < 0.55 ? 2 : 1;
+  let g = "";
+  for (let i = 0; i < len; i++) g += GIVEN[Math.floor(r() * GIVEN.length)]!;
+  return s + g;
+}
+
+type Case = { kind: string; text: (n: string, m: string) => string; names: (n: string, m: string) => string[] };
+
+const CASES: Case[] = [
+  { kind: "角色词+冒号", text: (n) => `原告：${n}，男，1985年3月2日出生，汉族。`, names: (n) => [n] },
+  { kind: "角色词+冒号", text: (n) => `被申请人：${n}，女，住所地略。`, names: (n) => [n] },
+  { kind: "角色词+冒号", text: (n) => `委托代理人：${n}，某律师事务所律师。`, names: (n) => [n] },
+  { kind: "角色词+括注", text: (n) => `被告（反诉原告）：${n}，男。`, names: (n) => [n] },
+  { kind: "角色词直接接名", text: (n) => `法定代表人${n}，执行董事。`, names: (n) => [n] },
+  { kind: "角色词直接接名", text: (n) => `证人${n}出庭作证称，其于当日在场。`, names: (n) => [n] },
+  { kind: "角色词直接接名", text: (n) => `出借人${n}向借款人转账五万元。`, names: (n) => [n] },
+  { kind: "角色词+序号", text: (n, m) => `被告一：${n}；被告二：${m}。`, names: (n, m) => [n, m] },
+  { kind: "称谓", text: (n) => `我所已与${n}律师电话沟通。`, names: (n) => [n] },
+  { kind: "称谓", text: (n) => `${n}女士表示同意调解方案。`, names: (n) => [n] },
+  { kind: "称谓", text: (n) => `本案由${n}法官独任审理。`, names: (n) => [n] },
+  { kind: "传播（同文有上下文）", text: (n) => `申请人：${n}。${n}于2023年入职，${n}主张加班费。`, names: (n) => [n, n, n] },
+  { kind: "无上下文且不在词典（已知盲区）", text: (n, m) => `${n}和${m}在餐厅见面并签署了协议。`, names: (n, m) => [n, m] },
+  { kind: "言语/行为动词", text: (n) => `据${n}回忆，货物于当天送达。`, names: (n) => [n] },
+  { kind: "言语/行为动词", text: (n) => `另查明，${n}证实该笔款项系借款。`, names: (n) => [n] },
+  { kind: "言语/行为动词", text: (n) => `庭审中，${n}辩称其已还清全部欠款。`, names: (n) => [n] },
+];
+
+function countOccurrences(hay: string, needle: string): number {
+  let n = 0;
+  for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + needle.length)) n += 1;
+  return n;
+}
+
+test("自然人姓名识别召回：有上下文的语境 ≥ 95%，词典 100%；无上下文且不在词典的姓名如实报告为盲区", () => {
+  const r = rng(20261012);
+  const stats = new Map<string, { total: number; hit: number; misses: string[] }>();
+  const add = (kind: string, total: number, hit: number, miss?: string) => {
+    const s = stats.get(kind) ?? { total: 0, hit: 0, misses: [] };
+    s.total += total;
+    s.hit += hit;
+    if (miss && s.misses.length < 12) s.misses.push(miss);
+    stats.set(kind, s);
+  };
+  for (let round = 0; round < 40; round++) {
+    for (const c of CASES) {
+      const n = makeName(r);
+      let m = makeName(r);
+      while (m === n || m.includes(n) || n.includes(m)) m = makeName(r);
+      const tz = new MatterTokenizer({ matterKey: Buffer.alloc(32, 9) });
+      const text = c.text(n, m);
+      const out = tz.tokenize(text).text;
+      const expected = c.names(n, m);
+      const uniq = [...new Set(expected)];
+      for (const name of uniq) {
+        const want = countOccurrences(text, name);
+        const left = countOccurrences(out, name);
+        add(c.kind, want, want - left, left > 0 ? `${name}｜${text}` : undefined);
+      }
+    }
+  }
+  // 词典：任何语境都替换
+  {
+    const r2 = rng(7);
+    let total = 0;
+    let hit = 0;
+    for (let i = 0; i < 200; i++) {
+      const n = makeName(r2);
+      const tz = new MatterTokenizer({ matterKey: Buffer.alloc(32, 9), parties: [{ name: n, kind: "person" }] });
+      const text = `${n}和对方在餐厅见面；次日${n}付款。`;
+      const out = tz.tokenize(text).text;
+      total += 2;
+      hit += 2 - countOccurrences(out, n);
+    }
+    add("当事人词典", total, hit);
+  }
+  // 词典 + 版面折行（阶段 4 终核核验 S4-27）：姓名被单个换行（含 \r\n、前后空格）断开，照常替换
+  {
+    const r3 = rng(11);
+    let total = 0;
+    let hit = 0;
+    const misses: string[] = [];
+    const breaks = ["\n", "\r\n", " \n", "\n　"];
+    for (let i = 0; i < 200; i++) {
+      const n = makeName(r3);
+      const tz = new MatterTokenizer({ matterKey: Buffer.alloc(32, 9), parties: [{ name: n, kind: "person" }] });
+      const chars = [...n];
+      const cut = 1 + (i % (chars.length - 1));
+      const wrapped = `${chars.slice(0, cut).join("")}${breaks[i % breaks.length]}${chars.slice(cut).join("")}`;
+      const text = `原告：${wrapped}，男，汉族。`;
+      const out = tz.tokenize(text).text;
+      total += 1;
+      if (out.includes(wrapped)) misses.push(JSON.stringify(wrapped));
+      else hit += 1;
+    }
+    add("当事人词典（版面折行断开）", total, hit, misses[0]);
+  }
+  const report: string[] = [];
+  for (const [kind, s] of stats) {
+    report.push(`${kind}：召回 ${((100 * s.hit) / s.total).toFixed(1)}%（${s.hit}/${s.total}）${s.misses.length ? `；漏识别示例：${s.misses.join(" / ")}` : ""}`);
+  }
+  console.log(`[姓名识别召回报告]\n${report.join("\n")}`);
+  for (const [kind, s] of stats) {
+    const recall = s.hit / s.total;
+    if (kind.includes("已知盲区")) continue;
+    if (kind.startsWith("当事人词典")) assert.equal(recall, 1, kind);
+    else assert.ok(recall >= 0.95, `${kind} 召回 ${recall}`);
+  }
+});
+
+test("不误判：以姓氏字开头的机构名称、常见词不被替换为自然人代号（默认保留机构名称）", () => {
+  const tz = new MatterTokenizer({ matterKey: Buffer.alloc(32, 9) });
+  const text = [
+    "被告：张家港市华盛机械有限公司，住所地略。",
+    "原告王府井百货集团股份有限公司诉称。",
+    "第三人：江苏银行股份有限公司南京分行。",
+    "由项目经理负责现场管理，公司法务出具意见。",
+    "申请人：黄河水利委员会。",
+    "经查，银行称该账户已冻结；物业表示设备需停机。",
+  ].join("\n");
+  const out = tz.tokenize(text).text;
+  for (const org of ["张家港市华盛机械有限公司", "王府井百货集团股份有限公司", "江苏银行股份有限公司南京分行", "项目经理", "公司法务", "黄河水利委员会", "银行称", "物业表示"]) {
+    assert.ok(out.includes(org), `误替换：${org}\n${out}`);
+  }
+});
+
+test("误替换率报告：一组不含自然人姓名的常见法律文书句子（只报告，不设阈值；误替换只影响可读性，界面与交付件会还原）", () => {
+  const tz = new MatterTokenizer({ matterKey: Buffer.alloc(32, 9) });
+  const sentences = [
+    "本院认为，双方签订的买卖合同系真实意思表示，合法有效。",
+    "被告辩称其已按约交付货物，不应承担违约责任。",
+    "经审理查明，2023年5月1日双方签订《房屋租赁合同》。",
+    "原告主张的违约金过高，本院依法予以调整。",
+    "高温天气持续，施工方表示工期需顺延。",
+    "金额以银行流水为准，利息按年利率3.65%计算。",
+    "江苏省高级人民法院二审维持原判。",
+    "公司章程约定，股东会会议由董事会召集。",
+    "方案经董事会审议通过后报股东会批准。",
+    "关于管辖权异议，本院裁定驳回。",
+    "周末加班费按照劳动合同约定的标准支付。",
+    "石油化工企业应当履行安全生产主体责任。",
+    "海关总署公告称，相关商品自即日起适用新税率。",
+    "文书送达后，当事人应当在十五日内提出上诉。",
+    "宋体小四号字，行距固定值二十磅。",
+  ];
+  let fp = 0;
+  const shown: string[] = [];
+  for (const s of sentences) {
+    const r = tz.tokenize(s);
+    if (r.counts.person) {
+      fp += r.counts.person;
+      shown.push(r.text);
+    }
+  }
+  console.log(`[误替换报告] ${sentences.length} 句中误替换 ${fp} 处${shown.length ? `：${shown.join(" / ")}` : ""}`);
+});
+
+test("名字末字是常作名字用字的功能字（S8 进所评测发现：“张明月”曾被截成“张明”、漏出“月”）：有明确边界时整名替换；常用词不误认", async () => {
+  const { recognizeNames } = await import("../src/names.ts");
+  for (const [text, name] of [
+    ["原告：张明月，电话 13900000000。", "张明月"],
+    ["原告：欧阳明月，住所地不详。", "欧阳明月"],
+    ["被告：王建中，男，", "王建中"],
+    ["王明月律师认为", "王明月"],
+    ["张永年，男，身份证号", "张永年"],
+    ["证人李文书，到庭作证。", "李文书"],
+    ["被告李四方辩称", "李四"],
+  ] as const) {
+    assert.ok(recognizeNames(text).has(name), `${text} → ${name}`);
+  }
+  for (const [text, not] of [
+    ["张三等，均到庭。", "张三等"],
+    ["官方表示同意。", "官方"],
+    ["股东许可，", "许可"],
+    [" 向双方确认", "向双方"],
+    ["原告：张某，", "张某"],
+    ["甲方：李四于本月，", "李四于"],
+    ["被告李四方辩称", "李四方"],
+    ["施工方认为", "施工方"],
+    ["，于近日收到", "于近日"],
+    ["均至，", "均至"],
+  ] as const) {
+    assert.ok(!recognizeNames(text).has(not), `${text} 不得认出 ${not}`);
+  }
+});
+
+test("名字末字是介词、连词（V13 第 38 批：“法定代表人钱季同。”曾截成“钱季”，送给模型的是“〔自然人〕同。”，起草的协议把客户法定代表人写成“钱季”）：右边是标点、文末或言语类动词时整名识别；称谓作右边界照旧截短", async () => {
+  const { recognizeNames } = await import("../src/names.ts");
+  for (const [text, name] of [
+    ["住所江苏省南京市江宁区乘渚路66号，法定代表人钱季同。转让方一：贺知远（", "钱季同"],
+    ["法定代表人：钱季同", "钱季同"],
+    ["甲方法定代表人钱季同签字", "钱季同"],
+    ["原告：王立和，男，", "王立和"],
+    ["委托代理人：陈思为，电话 13900000000", "陈思为"],
+    ["申请人：方景行，男，1986年生", "方景行"],
+    ["乙方（签字）：方景行　　2024年", "方景行"],
+  ] as const) {
+    const got = recognizeNames(text);
+    assert.ok(got.has(name), `${text} → ${name}（实得 ${[...got].join("、")}）`);
+  }
+  for (const [text, not, keep] of [
+    ["原告张三同律师一起到庭", "张三同", "张三"],
+    ["被告李四方辩称", "李四方", "李四"],
+    ["甲方：李四于本月，", "李四于", "李四"],
+  ] as const) {
+    const got = recognizeNames(text);
+    assert.ok(!got.has(not) && got.has(keep), `${text} 应认出 ${keep}、不得认出 ${not}（实得 ${[...got].join("、")}）`);
+  }
+});
+
+test("也是姓氏的连词、介词、情态字只凭弱证据不当姓氏（V13 第 38 批 W6：合同第 12.4 条“，应事先说明依据”认出“应事先”，学进令牌表后第 10.4 条“乙方应事先在附件五中披露”送给模型成了“乙方〔自然人〕在附件五中披露”，最终答复让律师删去“事先”）；强证据下的真名照常认出", async () => {
+  const { recognizeNames } = await import("../src/names.ts");
+  for (const [text, not] of [
+    ["法律法规确需保留的，应事先说明依据、范围和期限，并在保留期间隔离存储。", "应事先"],
+    ["服务费是否含税、由财务确认发票类型和税率。", "由财务"],
+    ["必须马上向德隆书面确认交期。", "向德隆"],
+    ["请向贵方确认交期。", "向贵"],
+    ["董事长由股东会选举，财务负责人由锦漪委派。", "由锦漪"],
+    ["列明负责人和期限。", "和期限"],
+    ["员工和家属信息分开处理。", "和家属"],
+    ["境外法超出检索覆盖时，向相应法域律师咨询。", "应法域"],
+    ["上传人和责任律师仍承担保密义务。", "和责任"],
+    ["申请人向贵院申请财产保全。", "向贵"],
+    ["申请人向仲裁委员会申请仲裁。", "向仲"],
+    ["需分别评估员工、应聘者及家属信息。", "应聘"],
+  ] as const) {
+    const got = recognizeNames(text);
+    assert.ok(![...got].some((n) => n.startsWith(not)), `${text} 不得认出 ${not}（实得 ${[...got].join("、")}）`);
+  }
+  for (const [text, name] of [
+    ["证人：应晓明，男，1980年生", "应晓明"],
+    ["被告应晓明于 2025 年 3 月向原告借款", "应晓明"],
+    ["原告：由志强，男，", "由志强"],
+    ["联系人：向东，电话 13900000000", "向东"],
+    ["，向东律师确认", "向东"],
+    ["于明表示同意", "于明"],
+  ] as const) {
+    const got = recognizeNames(text);
+    assert.ok(got.has(name), `${text} → ${name}（实得 ${[...got].join("、")}）`);
+  }
+  // 整条链路：前文学到的误认值不再替换后文的正常条款
+  const t = new MatterTokenizer({ matterKey: Buffer.alloc(32, 7), parties: [] });
+  const r1 = t.tokenize("12.4 法律法规确需保留的，应事先说明依据、范围和期限。").text;
+  const r2 = t.tokenize("10.4 确需将背景技术嵌入开发成果的，乙方应事先在附件五中披露。").text;
+  assert.ok(!/〔自然人/.test(r1 + r2), `${r1} ${r2}`);
+  // 旧规则已学进事项令牌表的误认值退役：带着旧表的令牌化器也不再替换正文
+  const old = new MatterTokenizer({ matterKey: Buffer.alloc(32, 7), parties: [], table: [{ token: "〔自然人·DNE0N1〕", category: "person", value: "应事先", normalized: "应事先", source: "recognizer" }] });
+  assert.equal(old.tokenize("乙方应事先在附件五中披露。").text, "乙方应事先在附件五中披露。");
+});
+
+test("言语动词分支（只有“后面跟言语动词”这一条弱证据）要求名字含常见名字用字（V13 第 38 批 W4：意见书“现有证据支持主张后两周……”认出“支持”，学进事项令牌表后“裁判支持数额”“能否同时支持”都被换成自然人代号，复核据此报“语句残缺、不能交付”）；称呼形态与真名照常认出", async () => {
+  const { recognizeNames } = await import("../src/names.ts");
+  for (const [text, not] of [
+    ["现有证据支持主张后两周未经授权的推广费19,300元。", "支持"],
+    ["应当区分说明各项请求的依据。", "区分"],
+    ["该操作危险表示需要二次确认。", "危险"],
+  ] as const) {
+    const got = recognizeNames(text);
+    assert.ok(!got.has(not), `${text} 不得认出 ${not}（实得 ${[...got].join("、")}）`);
+  }
+  for (const [text, name] of [
+    ["王总表示同意。", "王总"],
+    ["据曹雨回忆，货物于当天送达。", "曹雨"],
+    ["林岚表示已收到。", "林岚"],
+    ["，张宸璐称其未收到通知。", "张宸璐"],
+  ] as const) {
+    const got = recognizeNames(text);
+    assert.ok(got.has(name), `${text} → ${name}（实得 ${[...got].join("、")}）`);
+  }
+});

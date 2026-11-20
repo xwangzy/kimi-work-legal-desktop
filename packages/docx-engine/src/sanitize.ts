@@ -1,0 +1,239 @@
+/**
+ * 受众净化（§2.4/§5.4）：先生成受众版本的确切文件，再检查；
+ * 清除隐藏批注、历史修订、作者属性；接受修订以定稿文本为准。
+ * 注意：不得误删依法应保留的生成标识（AIGC 标识在 manifest 与文件属性保留）。
+ */
+import { dropHouseMark } from "./house-style.ts";
+import { readZipEntries, writeZip } from "./zip.ts";
+import { childElements, enclosingElement, findElement, paragraphSpans, removeElements } from "./textmap.ts";
+
+const W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+
+export interface SanitizeResult {
+  docx: Buffer;
+  removed: { comments: number; deletionsAccepted: number; insertionsAccepted: number };
+}
+
+export function sanitizeDocx(docx: Buffer): SanitizeResult {
+  const files = readZipEntries(docx);
+  let xml = files.get("word/document.xml")?.toString("utf8");
+  if (xml === undefined) throw new Error("DOCX 缺少 word/document.xml");
+
+  const counts = { deletionsAccepted: 0, insertionsAccepted: 0, comments: 0 };
+  files.set("word/document.xml", Buffer.from(acceptAll(xml, counts), "utf8"));
+  // 脚注、尾注、页眉页脚里的修订与批注同样接受、去掉（第 34 批 D12：原先只处理正文，清洁稿脚注里还留着修订和悬空的批注引用）
+  for (const [name, data] of files) {
+    if (/^word\/(?:footnotes|endnotes|header\d*|footer\d*)\.xml$/.test(name)) files.set(name, Buffer.from(acceptAll(data.toString("utf8"), counts), "utf8"));
+  }
+  // 清洁稿关掉“修订”开关（修订稿为方便律师续改而打开，第 35 批）
+  const settings = files.get("word/settings.xml")?.toString("utf8");
+  if (settings !== undefined && /<w:trackRevisions\b/.test(settings)) files.set("word/settings.xml", Buffer.from(settings.replace(/<w:trackRevisions\b[^>]*\/>/g, ""), "utf8"));
+  const { deletionsAccepted, insertionsAccepted, comments } = counts;
+  // 原本有批注部件的清空；没有的不新建（V10 第 36 批，V3 律师评分：清洁稿里多出一个没在 [Content_Types].xml 与关系里登记的空 comments.xml）
+  if (files.has("word/comments.xml")) files.set("word/comments.xml", Buffer.from(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:comments xmlns:w="${W_NS}"></w:comments>`, "utf8"));
+
+  // 作者属性净化（保留生成标识：creator 标记为发行版，满足 AI 标识要求）
+  const core = files.get("docProps/core.xml");
+  if (core) {
+    let c = core.toString("utf8");
+    c = c.replace(/<dc:creator>[\s\S]*?<\/dc:creator>/, "<dc:creator>Kimi Work 法律行业发行版（AI 辅助生成，须经律师复核）</dc:creator>");
+    c = c.replace(/<cp:lastModifiedBy>[\s\S]*?<\/cp:lastModifiedBy>/, "<cp:lastModifiedBy></cp:lastModifiedBy>");
+    files.set("docProps/core.xml", Buffer.from(c, "utf8"));
+  }
+
+  dropHouseMark(files);
+  const out = writeZip([...files.entries()].map(([name, data]) => ({ name, data })));
+  return { docx: out, removed: { comments, deletionsAccepted, insertionsAccepted } };
+}
+
+/**
+ * 段落标记上的删除（<w:pPr><w:rPr><w:del …/></w:rPr></w:pPr>）表示“这个段落标记被删、与下一段合并”。
+ * 接受时把这一段的文字接到下一段开头，合并后的段落用下一段的段落属性（留下来的是下一段的段落标记）；
+ * 连续几段都删了标记的依次并入；后面没有紧挨着的段落时只去掉标记。表格单元格里的段落同样处理（不跨单元格合并）。
+ */
+export function mergeDeletedParagraphMarks(xml: string): { xml: string; merged: number } {
+  // 与 mapParagraphs 同一切分（第 34 批 D05）；自闭合空段落展开成一对标签，才能把前一段的文字接进来
+  const paras = paragraphSpans(xml).map((sp) => {
+    const raw = xml.slice(sp.start, sp.end);
+    return { start: sp.start, end: sp.end, text: raw.endsWith("/>") ? raw.replace(/\s*\/>$/, "></w:p>") : raw };
+  });
+  // 段落格式按配对标签取（含他人格式修订 w:pPrChange 时不截半）
+  const pPrOf = (p: string): [string, string | undefined] => {
+    const open = /^<w:p\b[^>]*>/.exec(p)![0];
+    const e = findElement(p, "w:pPr");
+    return e && /^\s*$/.test(p.slice(open.length, e.start)) ? [p.slice(0, e.end), p.slice(e.start, e.end)] : [open, undefined];
+  };
+  const markDeleted = (p: string) => {
+    const pPr = pPrOf(p)[1] ?? "";
+    return /<w:rPr\b[^>]*>(?:(?!<\/w:rPr>)[\s\S])*<w:del\b[^>]*\/>/.test(pPr);
+  };
+  const body = (p: string) => p.slice(pPrOf(p)[0].length, p.length - "</w:p>".length);
+  let out = "";
+  let cursor = 0;
+  let merged = 0;
+  for (let i = 0; i < paras.length; i += 1) {
+    if (!markDeleted(paras[i]!.text)) continue;
+    // 连续删标记的一串段落，与其后紧挨着的那一段合并
+    let j = i;
+    while (j + 1 < paras.length && markDeleted(paras[j]!.text) && /^\s*$/.test(xml.slice(paras[j]!.end, paras[j + 1]!.start))) j += 1;
+    // 后面没有紧挨着的段落可并入：只去掉标记（交给下面的统一处理）
+    if (j === i) continue;
+    const target = paras[j]!.text;
+    const head = pPrOf(target)[0];
+    const runs = paras.slice(i, j).map((p) => body(p.text)).join("");
+    out += xml.slice(cursor, paras[i]!.start) + head + runs + target.slice(head.length);
+    cursor = paras[j]!.end;
+    merged += j - i;
+    i = j;
+  }
+  out += xml.slice(cursor);
+  return { xml: out, merged };
+}
+
+/**
+ * 接受“删除表格行”（V16 第 41 批）：行属性里带 <w:del …/> 的整行移除（与 Word“接受全部修订”一致）；整张表的行都删掉了的，表格一并移除。
+ * 被删的行是纵向合并组的起始行（类别栏的字写在这一行）而下一行续接合并的：把这一格移到下一行，类别栏不丢。
+ */
+export function removeDeletedRows(xml: string): { xml: string; removed: number } {
+  let out = xml;
+  let removed = 0;
+  const cellsOf = (rowXml: string): { start: number; end: number }[] => {
+    const open = /^<w:tr\b[^>]*>/.exec(rowXml)![0];
+    return childElements(rowXml.slice(open.length, rowXml.length - "</w:tr>".length))
+      .filter((c) => c.name === "w:tc")
+      .map((c) => ({ start: c.start + open.length, end: c.end + open.length }));
+  };
+  const tcPrOf = (cell: string): string => {
+    const e = findElement(cell, "w:tcPr");
+    return e ? cell.slice(e.start, e.end) : "";
+  };
+  for (let guard = 0; guard < 5000; guard++) {
+    const m = /<w:trPr\b[^>]*>(?:(?!<\/w:trPr>)[\s\S])*?<w:del\b[^>]*\/>/.exec(out);
+    if (!m) break;
+    const row = enclosingElement(out, "tr", m.index, "inner");
+    if (!row) {
+      // 结构不成对：只去掉这一个标记，免得死循环
+      out = out.slice(0, m.index) + m[0].replace(/<w:del\b[^>]*\/>$/, "") + out.slice(m.index + m[0].length);
+      continue;
+    }
+    const tbl = enclosingElement(out, "tbl", row.start, "inner");
+    let rowXml = out.slice(row.start, row.end);
+    let tail = out.slice(row.end);
+    const nextAt = /^\s*<w:tr\b/.exec(tail);
+    if (nextAt) {
+      const next = enclosingElement(out, "tr", row.end + nextAt[0].length - 1, "inner");
+      if (next && next.start >= row.end) {
+        let nextXml = out.slice(next.start, next.end);
+        const mine = cellsOf(rowXml);
+        const theirs = cellsOf(nextXml);
+        // 从后往前换，前面的位置不受影响
+        for (let i = Math.min(mine.length, theirs.length) - 1; i >= 0; i--) {
+          const a = rowXml.slice(mine[i]!.start, mine[i]!.end);
+          const b = nextXml.slice(theirs[i]!.start, theirs[i]!.end);
+          const cont = /<w:vMerge\b(?![^>]*w:val="restart")[^>]*\/>/.test(tcPrOf(b));
+          if (/<w:vMerge\b[^>]*w:val="restart"/.test(tcPrOf(a)) && cont) nextXml = nextXml.slice(0, theirs[i]!.start) + a + nextXml.slice(theirs[i]!.end);
+        }
+        tail = out.slice(row.end, next.start) + nextXml + out.slice(next.end);
+      }
+    }
+    out = out.slice(0, row.start) + tail;
+    removed += 1;
+    void rowXml;
+    if (tbl) {
+      const t = enclosingElement(out, "tbl", tbl.start, "inner");
+      if (t && t.start === tbl.start && !/<w:tr\b/.test(out.slice(t.start, t.end))) {
+        // 嵌在单元格里的表删空后留一个空段落（单元格须以段落结尾）；正文里的直接去掉
+        const nested = enclosingElement(out.slice(0, t.start) + out.slice(t.end), "tbl", t.start, "inner") !== null;
+        out = out.slice(0, t.start) + (nested ? "<w:p/>" : "") + out.slice(t.end);
+      }
+    }
+  }
+  return { xml: out, removed };
+}
+
+/** 接受一个部件里的全部修订、去掉批注标记（第 34 批：移动修订、格式修订记录也处理——D12）。计数累加到 counts。 */
+function acceptAll(input: string, counts: { deletionsAccepted: number; insertionsAccepted: number; comments: number }): string {
+  let xml = input;
+  // 段落标记被删（复核 Q2-15）：接受即与下一段合并（与 Word“接受全部修订”一致），不能只去掉标记把段落留下
+  const merged = mergeDeletedParagraphMarks(xml);
+  xml = merged.xml;
+  counts.deletionsAccepted += merged.merged;
+  // 删除的表格行（行属性里的 <w:del …/>）：接受即整行移除——必须先于下面“去掉自闭合修订标记”，否则行会留下来
+  const rows = removeDeletedRows(xml);
+  xml = rows.xml;
+  counts.deletionsAccepted += rows.removed;
+  // 段落标记上的修订（自闭合 <w:ins …/> / <w:del …/>，在 w:pPr 的 w:rPr 里）：接受即去掉标记——必须先于成对标记处理，
+  // 否则下面的成对正则会把自闭合标记当成开头、一直吞到后面别的修订的结束标记（v9.4 第 19 批：段后插入的新段落带这种标记）
+  xml = xml.replace(/<w:(?:ins|del|moveFrom|moveTo)\b[^>]*\/>/g, "");
+  // 移动修订的范围标记、格式修订记录：接受即去掉（格式按修订后的生效；w:rPrChange 等里面嵌的是修订前的格式）
+  xml = xml.replace(/<w:(?:moveFromRangeStart|moveFromRangeEnd|moveToRangeStart|moveToRangeEnd)\b[^>]*\/>/g, "");
+  xml = removeElements(xml, ["w:rPrChange", "w:pPrChange", "w:sectPrChange", "w:tblPrChange", "w:tblPrExChange", "w:trPrChange", "w:tcPrChange", "w:tblGridChange", "w:numberingChange"]);
+  // 接受删除：整段 w:del / w:moveFrom（移动的原位置）移除
+  xml = xml.replace(/<w:(del|moveFrom)\b[^>]*>[\s\S]*?<\/w:\1>/g, () => {
+    counts.deletionsAccepted++;
+    return "";
+  });
+  // 接受插入：保留内部 runs（w:moveTo 是移动的新位置，同样保留）；嵌套的由内向外逐层展开
+  for (let prev = ""; prev !== xml; ) {
+    prev = xml;
+    xml = xml.replace(/<w:(ins|moveTo)\b[^>]*>((?:(?!<w:(?:ins|moveTo)\b)[\s\S])*?)<\/w:\1>/g, (_m, _n, inner) => {
+      counts.insertionsAccepted++;
+      return inner as string;
+    });
+  }
+  // 批注引用与范围标记移除
+  xml = xml.replace(/<w:commentRangeStart\b[^>]*\/>/g, () => {
+    counts.comments++;
+    return "";
+  });
+  xml = xml.replace(/<w:commentRangeEnd\b[^>]*\/>/g, "");
+  xml = xml.replace(/<w:r\b[^>]*>(?:(?!<\/w:r>)[\s\S])*?<w:commentReference\b[^>]*\/>[\s\S]*?<\/w:r>/g, "");
+  return xml;
+}
+
+/**
+ * 对外修订稿（V14 第 39 批；基线走查 B 独立评分）：律师说“修订稿要能直接发回对方”，产品交出的修订稿里每处修订作者都是
+ * “Kimi Work 法律助手（AI 建议，待律师确认）”、还带着写给律师的修改理由批注。这里从修订稿派生对外版：
+ * 修订痕迹原样保留；fromAuthor 写的批注（引用、范围标记、批注部件里的条目）去掉，别人的批注保留；只把 fromAuthor 写的修订改署名为 toAuthor
+ * （设置里的修订署名，没设用本所名称，10-23 拍板），对方原有的修订与作者不动；最后修改者写 toAuthor。纯函数。
+ */
+export function externalRedline(docx: Buffer, fromAuthor: string, toAuthor: string): { docx: Buffer; comments: number; reauthored: number } {
+  const files = readZipEntries(docx);
+  const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const from = `w:author="${esc(fromAuthor)}"`;
+  const to = `w:author="${esc(toAuthor)}"`;
+  let comments = 0;
+  let reauthored = 0;
+  // 只去掉本产品写的批注（修改理由）；对方或本方同事原有的批注原样保留（V16 第 41 批真实走查 D1：对外版把对方在第 15.2 款的批注一并删了，
+  // 答复却写“对方批注未改动”——律师说了“对方已留的修订与批注一律不动”）
+  const commentsXml = files.get("word/comments.xml")?.toString("utf8");
+  const drop = new Set<string>();
+  if (commentsXml !== undefined) {
+    for (const m of commentsXml.matchAll(/<w:comment\b([^>]*)>/g)) {
+      const id = /\bw:id="(\d+)"/.exec(m[1]!)?.[1];
+      if (id !== undefined && m[1]!.includes(from)) drop.add(id);
+    }
+  }
+  const idOf = (tag: string) => /\bw:id="(\d+)"/.exec(tag)?.[1] ?? "";
+  for (const [name, data] of files) {
+    if (!/^word\/(?:document|footnotes|endnotes|header\d*|footer\d*)\.xml$/.test(name)) continue;
+    let xml = data.toString("utf8");
+    xml = xml.replace(/<w:commentRangeStart\b[^>]*\/>/g, (tag) => {
+      if (!drop.has(idOf(tag))) return tag;
+      comments++;
+      return "";
+    });
+    xml = xml.replace(/<w:commentRangeEnd\b[^>]*\/>/g, (tag) => (drop.has(idOf(tag)) ? "" : tag));
+    xml = xml.replace(/<w:r\b[^>]*>(?:(?!<\/w:r>)[\s\S])*?<w:commentReference\b[^>]*\/>[\s\S]*?<\/w:r>/g, (run) => (drop.has(idOf(/<w:commentReference\b[^>]*\/>/.exec(run)![0])) ? "" : run));
+    reauthored += xml.split(from).length - 1;
+    xml = xml.split(from).join(to);
+    files.set(name, Buffer.from(xml, "utf8"));
+  }
+  if (commentsXml !== undefined) {
+    const kept = commentsXml.replace(/<w:comment\b([^>]*)>[\s\S]*?<\/w:comment>/g, (el, attrs: string) => (drop.has(idOf(`<x ${attrs}>`)) ? "" : el));
+    files.set("word/comments.xml", Buffer.from(kept, "utf8"));
+  }
+  const core = files.get("docProps/core.xml");
+  if (core) files.set("docProps/core.xml", Buffer.from(core.toString("utf8").replace(/<cp:lastModifiedBy>[\s\S]*?<\/cp:lastModifiedBy>|<cp:lastModifiedBy\/>/, `<cp:lastModifiedBy>${esc(toAuthor)}</cp:lastModifiedBy>`), "utf8"));
+  return { docx: writeZip([...files.entries()].map(([name, data]) => ({ name, data }))), comments, reauthored };
+}

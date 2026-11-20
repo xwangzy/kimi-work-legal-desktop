@@ -1,0 +1,397 @@
+{
+  "kind": "tool-manifest-lock",
+  "server": "legal",
+  "note": "评审后提交；改动 schema、副作用、资源、版本或用途必须同步本文件并经法律产品与安全双人评审",
+  "tools": [
+    {
+      "name": "law.get_version",
+      "version": "1",
+      "sideEffect": "read",
+      "resource": "lawdb",
+      "purposes": [
+        "legal_analysis",
+        "contract_review",
+        "case_file",
+        "legal_research",
+        "drafting"
+      ],
+      "schemaHash": "18092e1167744f1861cfc15f3aa8800f7a8d2b8be24c582a472fc4aec9bd488a"
+    },
+    {
+      "name": "law.search",
+      "version": "1",
+      "sideEffect": "read",
+      "resource": "lawdb",
+      "purposes": [
+        "legal_analysis",
+        "contract_review",
+        "case_file",
+        "legal_research",
+        "drafting"
+      ],
+      "schemaHash": "10798ac8d2df2a3150d204e10be2e4fb12cc89650fb68e3a6d3b4b38e1914e26"
+    },
+    {
+      "name": "law.get_article",
+      "version": "1",
+      "sideEffect": "read",
+      "resource": "lawdb",
+      "purposes": [
+        "legal_analysis",
+        "contract_review",
+        "case_file",
+        "legal_research",
+        "drafting"
+      ],
+      "schemaHash": "5ec4542867313a7bdb18796246914ae9ea5509502fe75757aec85b9ea1087afd"
+    },
+    {
+      "name": "citations.verify",
+      "version": "1",
+      "sideEffect": "read",
+      "resource": "lawdb",
+      "purposes": [
+        "legal_analysis",
+        "contract_review",
+        "case_file",
+        "legal_research",
+        "drafting"
+      ],
+      "schemaHash": "1e5e19d50867c825c44659caaa5ff35d913c1754f06d2fa93250d571d0199090"
+    },
+    {
+      "name": "calc.interest",
+      "version": "2",
+      "sideEffect": "read",
+      "resource": "pure",
+      "purposes": [
+        "legal_analysis",
+        "contract_review",
+        "case_file",
+        "legal_research",
+        "drafting"
+      ],
+      "schemaHash": "7cb5d7102bbf85da6e5b9a6d4ca9593222476a73588c0f3a68fb878324f191a0"
+    },
+    {
+      "name": "calc.deadline",
+      "version": "1",
+      "sideEffect": "read",
+      "resource": "pure",
+      "purposes": [
+        "legal_analysis",
+        "contract_review",
+        "case_file",
+        "legal_research",
+        "drafting"
+      ],
+      "schemaHash": "a87e68ad5df2950d803c7699f89f5f70de9f509ec0bf72999131a8af66f8bc20"
+    },
+    {
+      "name": "redact.scan",
+      "version": "1",
+      "sideEffect": "read",
+      "resource": "pure",
+      "purposes": [
+        "legal_analysis",
+        "contract_review",
+        "case_file",
+        "legal_research",
+        "drafting",
+        "redaction"
+      ],
+      "schemaHash": "54669b5e6a1bfebb4d15788d41b5cd5fb8e51fc2d982eb2383a42262c748c90a"
+    },
+    {
+      "name": "materials.read_excerpt",
+      "version": "1",
+      "sideEffect": "read",
+      "resource": "matter_materials",
+      "purposes": [
+        "legal_analysis",
+        "contract_review",
+        "case_file",
+        "legal_research",
+        "drafting"
+      ],
+      "schemaHash": "676aeb832cb9e0ab2645674fd9d5197d61180a5b5afc9550334a103b7bf2be9a"
+    },
+    {
+      "name": "docx.apply_revisions",
+      "version": "1",
+      "sideEffect": "write_draft",
+      "resource": "matter_documents",
+      "purposes": [
+        "contract_review",
+        "drafting"
+      ],
+      "schemaHash": "79d5d1d9de973ef24e08d76811e10975a6b6d6f52d168b158643d52c92f741bb"
+    },
+    {
+      "name": "docx.compare",
+      "version": "1",
+      "sideEffect": "read",
+      "resource": "matter_documents",
+      "purposes": [
+        "contract_review",
+        "legal_analysis"
+      ],
+      "schemaHash": "1ad17ddaf5c0d0359db0b0316fdfa72c447359582f778cc9e3cf6b6c3f77c0d7"
+    },
+    {
+      "name": "docx.sanitize",
+      "version": "1",
+      "sideEffect": "write_draft",
+      "resource": "matter_documents",
+      "purposes": [
+        "delivery_preparation"
+      ],
+      "schemaHash": "277e74b5feecdac722bf7a9e2e071ebf634cfeb5acb38eaaaae7e0a20d0b1449"
+    },
+    {
+      "name": "docx.render_report",
+      "version": "5",
+      "sideEffect": "write_draft",
+      "resource": "matter_work",
+      "purposes": [
+        "legal_analysis",
+        "drafting",
+        "legal_research",
+        "case_file"
+      ],
+      "schemaHash": "09892af976adec25a5f56db7fe59f99448da180a309e5a17bb09af72b44a6122"
+    },
+    {
+      "name": "docx.revise",
+      "version": "1",
+      "sideEffect": "write_draft",
+      "resource": "matter_documents",
+      "purposes": [
+        "legal_analysis",
+        "drafting",
+        "contract_review"
+      ],
+      "schemaHash": "0e63efe07c7627110abd285c9425f039bae46348e007aa314effbe3c5783effc"
+    },
+    {
+      "name": "docx.edit_draft",
+      "version": "1",
+      "sideEffect": "write_draft",
+      "resource": "matter_work",
+      "purposes": [
+        "legal_analysis",
+        "drafting",
+        "legal_research",
+        "case_file"
+      ],
+      "schemaHash": "698e1d8635788aae1afe820a059a0c0962a04c5c9200a3859df10ff912a214e7"
+    },
+    {
+      "name": "redact.apply",
+      "version": "1",
+      "sideEffect": "write_draft",
+      "resource": "matter_documents",
+      "purposes": [
+        "redaction",
+        "delivery_preparation"
+      ],
+      "schemaHash": "277e74b5feecdac722bf7a9e2e071ebf634cfeb5acb38eaaaae7e0a20d0b1449"
+    },
+    {
+      "name": "materials.list",
+      "version": "1",
+      "sideEffect": "read",
+      "resource": "matter_materials",
+      "purposes": [
+        "legal_analysis",
+        "contract_review",
+        "case_file",
+        "legal_research",
+        "drafting"
+      ],
+      "schemaHash": "99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa"
+    },
+    {
+      "name": "riskcards.submit",
+      "version": "4",
+      "sideEffect": "write_draft",
+      "resource": "matter_work",
+      "purposes": [
+        "legal_analysis",
+        "contract_review",
+        "case_file",
+        "legal_research",
+        "drafting"
+      ],
+      "schemaHash": "49d0e7e4df50f8637f78c30c05f7a1f5db5dfda9540a489207ca93c98f87227d"
+    },
+    {
+      "name": "riskcards.list",
+      "version": "2",
+      "sideEffect": "read",
+      "resource": "matter_work",
+      "purposes": [
+        "legal_analysis",
+        "contract_review",
+        "case_file",
+        "legal_research",
+        "drafting"
+      ],
+      "schemaHash": "0b6e3ad5077ad38623a96a2659ca323938f283c80219b7e99c705e80970c0160"
+    },
+    {
+      "name": "facts.submit",
+      "version": "1",
+      "sideEffect": "write_draft",
+      "resource": "matter_work",
+      "purposes": [
+        "legal_analysis",
+        "contract_review",
+        "case_file",
+        "legal_research",
+        "drafting"
+      ],
+      "schemaHash": "90d8fb4cb9a9426f631d24e8ed8fe15f15542993d557fa3b6358d9b65a3ebbdc"
+    },
+    {
+      "name": "facts.list",
+      "version": "1",
+      "sideEffect": "read",
+      "resource": "matter_work",
+      "purposes": [
+        "legal_analysis",
+        "contract_review",
+        "case_file",
+        "legal_research",
+        "drafting"
+      ],
+      "schemaHash": "e61917dc10556272f692fbc835f582dff8262395e33d8b2c97d425af1757b34f"
+    },
+    {
+      "name": "xlsx.render_table",
+      "version": "1",
+      "sideEffect": "write_draft",
+      "resource": "matter_work",
+      "purposes": [
+        "legal_analysis",
+        "contract_review",
+        "case_file",
+        "legal_research",
+        "drafting"
+      ],
+      "schemaHash": "476d6857457f4398954c577ea71cb14a548bc07f70a2a8b91322de0ac8346dc7"
+    },
+    {
+      "name": "xlsx.edit_cells",
+      "version": "1",
+      "sideEffect": "write_draft",
+      "resource": "matter_work",
+      "purposes": [
+        "legal_analysis",
+        "contract_review",
+        "case_file",
+        "legal_research",
+        "drafting"
+      ],
+      "schemaHash": "e46654cf05827737f3db34c6c9cd7862dc644d91c04647ea3e774c09739c24ca"
+    },
+    {
+      "name": "outline.submit",
+      "version": "1",
+      "sideEffect": "write_draft",
+      "resource": "matter_work",
+      "purposes": [
+        "legal_analysis",
+        "contract_review",
+        "case_file",
+        "legal_research",
+        "drafting"
+      ],
+      "schemaHash": "4af80ba0b3bcd72838e8264b830dffeb887a70354bf8f96ada6d035c812f1af0"
+    },
+    {
+      "name": "outline.get",
+      "version": "1",
+      "sideEffect": "read",
+      "resource": "matter_work",
+      "purposes": [
+        "legal_analysis",
+        "contract_review",
+        "case_file",
+        "legal_research",
+        "drafting"
+      ],
+      "schemaHash": "99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa"
+    },
+    {
+      "name": "table.get",
+      "version": "1",
+      "sideEffect": "read",
+      "resource": "matter_work",
+      "purposes": [
+        "legal_analysis",
+        "contract_review",
+        "case_file",
+        "legal_research",
+        "drafting"
+      ],
+      "schemaHash": "51fb3dab532def30f8f8c7731799ee5caeb8bf1ec67d3092afbd6a951c638a5f"
+    },
+    {
+      "name": "table.fill",
+      "version": "1",
+      "sideEffect": "write_draft",
+      "resource": "matter_work",
+      "purposes": [
+        "legal_analysis",
+        "contract_review",
+        "case_file",
+        "legal_research",
+        "drafting"
+      ],
+      "schemaHash": "d40cc43d884454680481e57c9c4b123cb1cc82da2b0d8f1f97c5f585c1e462d7"
+    },
+    {
+      "name": "calc.labor",
+      "version": "1",
+      "sideEffect": "read",
+      "resource": "pure",
+      "purposes": [
+        "legal_analysis",
+        "contract_review",
+        "case_file",
+        "legal_research",
+        "drafting"
+      ],
+      "schemaHash": "a637652ecd4c477d8a329359f76bb1c234e2e5783934ff0088aa2be8fd37858a"
+    },
+    {
+      "name": "calc.court_fee",
+      "version": "1",
+      "sideEffect": "read",
+      "resource": "pure",
+      "purposes": [
+        "legal_analysis",
+        "contract_review",
+        "case_file",
+        "legal_research",
+        "drafting"
+      ],
+      "schemaHash": "b4be6e2d82f5723926dc6fa0d46d1fb50697f95843bb9f5db9e2ba5150a81d5c"
+    },
+    {
+      "name": "rules.propose",
+      "version": "1",
+      "sideEffect": "write_draft",
+      "resource": "matter_work",
+      "purposes": [
+        "legal_analysis",
+        "contract_review",
+        "case_file",
+        "legal_research",
+        "drafting"
+      ],
+      "schemaHash": "f766bf47c0e279fa9b0f5ec0b02ae38557bab5e32dae7c990cf9387dc55e9fb4"
+    }
+  ]
+}

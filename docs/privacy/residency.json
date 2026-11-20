@@ -1,0 +1,1250 @@
+{
+  "format": "kwl-residency/1",
+  "updated": "2026-10-20",
+  "basis": "v9.2 §3.2 数据驻留面清单（每版门禁）；调研 Y5 §1.2 主表、§1.4 门禁做法",
+  "gate": "packages/kernel/test/privacy-residency.test.ts：字段齐全、强制点（文件 + 符号）存在、测试文件存在；写盘面与渲染存储键与源码扫描逐一相符——新增未登记的写盘点即失败",
+  "forms": {
+    "plain": "明文（真实值）",
+    "token_plain": "令牌明文：证件/账户/联系方式/住址/车牌/已识别姓名为代号，其余（机构名、案情、金额、日期、L2 案号、漏识别姓名）为原文",
+    "sqlcipher": "账本页级加密（SQLite3MultipleCiphers 的 ChaCha20-Poly1305，算法在代码里显式钉住；主密钥经 DPAPI 包裹。形态名沿用 sqlcipher）",
+    "block_cipher": "块密文：事项密钥 AES-256-GCM、按纪元，事项密钥包裹给设备加密公钥",
+    "kwe1": "KWE1：分块 AES-256-GCM / 逐条认证追加日志，每设备每事项工作区密钥按区派生",
+    "kwl_sealed": "kwl-sealed/1：HKDF(数据库主密钥) 派生密钥 AES-256-GCM 封装",
+    "dpapi": "Windows DPAPI（safeStorage）包裹",
+    "scrypt": "口令派生包裹",
+    "tls_pinned": "https + TLS ≥ 1.2 + 证书链 SPKI 钉住",
+    "public": "公开内容（签名的法规、方法模板、版本号），不含客户信息",
+    "content_free": "不含内容：只有事件码、枚举、计数、错误码与加盐 hash"
+  },
+  "rows": [
+    {
+      "id": 1,
+      "data": "材料原件",
+      "memory": "桌面客户端：主进程系统对话框或拖放给出路径，内核按路径直读（不经渲染进程内存）；解析进程",
+      "disk": "数据根 blobs/（block_cipher）；挂载的原件留律师文件夹（产品外）；涉密标志命中不写入任何副本；材料用途标注 document_roles（只含我方/对方/参考，迁移 0027）；关联的案卷文件夹位置 matters.folder_root 与文件在夹内的相对路径 document_versions.rel_path（迁移 0071：位置只在本机、团队同步不导出也不接收，相对路径随加密的同步段；删除事项时一并清除；文件夹里的文件按上面的方式复制加密保存）",
+      "local_channels": "kwl:invoke 只传一次性句柄或路径；web 开发形态整文件 base64",
+      "network": "否（图像直送须确认，L3 禁止）",
+      "logs_dumps": "Electron 进程转储可能含片段（3 天）",
+      "form": [
+        "block_cipher"
+      ],
+      "enforcement": [
+        {
+          "file": "packages/kernel/src/services/classified-marking.ts",
+          "symbol": "detectClassifiedMarking"
+        },
+        {
+          "file": "packages/kernel/src/blob-cipher.ts",
+          "symbol": "createBlobCipher"
+        },
+        {
+          "file": "packages/kernel/src/blobs.ts",
+          "symbol": "BlobStore"
+        },
+        {
+          "file": "apps/desktop/electron/file-dialogs.cjs",
+          "symbol": "createHandleStore"
+        }
+      ],
+      "tests": [
+        "packages/kernel/test/blobs-cipher.test.ts",
+        "packages/kernel/test/classified-marking.test.ts",
+        "apps/desktop/test/file-dialogs.test.ts"
+      ],
+      "residual": "web 开发形态仍经渲染进程内存；拖入的邮件附件在源应用临时目录另有副本（产品外）",
+      "owner": "研发-内核"
+    },
+    {
+      "id": 2,
+      "data": "解析文本 / OCR 文本",
+      "memory": "隔离解析进程（随包 Node）、内核",
+      "disk": "账本（sqlcipher）",
+      "local_channels": "Node IPC + 解析进程 stdout 结果协议",
+      "network": "令牌化后作为推理上下文出站（见 #10）",
+      "logs_dumps": "解析进程原生崩溃走 Windows 错误报告（P1-5 独立文件名与 WER 排除）；stderr 只认日志器 JSON 行",
+      "form": [
+        "sqlcipher"
+      ],
+      "enforcement": [
+        {
+          "file": "packages/kernel/src/services/parse-pipeline.ts",
+          "symbol": "parseWithPipeline"
+        },
+        {
+          "file": "packages/kernel/src/db.ts",
+          "symbol": "KernelDb"
+        },
+        {
+          "file": "packages/parse-ocr/src/worker-client.ts",
+          "symbol": "relayChildStderr"
+        }
+      ],
+      "tests": [
+        "packages/kernel/test/db-cipher.test.ts",
+        "packages/kernel/test/parse-ocr.test.ts"
+      ],
+      "residual": "解析/OCR 原生库崩溃不受 Crashpad 管（F4）",
+      "owner": "研发-内核"
+    },
+    {
+      "id": 3,
+      "data": "令牌表 / 当事人词典 / 疑似姓名判定",
+      "memory": "内核；闸门（按事项懒加载，空闲 15 分钟逐出并清零）；渲染进程（发送视图悬停时逐个还原、离开即收起；核对表显示疑似姓名原文）",
+      "disk": "账本 matter_token_keys / matter_tokens / matter_parties / matter_suspect_reviews（律师判为“不是姓名”的原文，迁移 0026）（sqlcipher）；删除事项时一并清除",
+      "local_channels": "Node IPC（内核 → 闸门下发条目）",
+      "network": "否（只有代号出站，映射不出站）",
+      "logs_dumps": "进程内存可进页面文件（残余）",
+      "form": [
+        "sqlcipher"
+      ],
+      "enforcement": [
+        {
+          "file": "packages/kernel/src/egress/matter-tokens.ts",
+          "symbol": "MatterTokenStore"
+        },
+        {
+          "file": "packages/kernel/src/services/send-preview.ts",
+          "symbol": "recordSuspectReview"
+        }
+      ],
+      "tests": [
+        "packages/egress-gate/test/residency.test.ts",
+        "packages/kernel/test/matter-lifecycle.test.ts",
+        "packages/kernel/test/send-preview.test.ts",
+        "packages/kernel/test/token-store.test.ts"
+      ],
+      "residual": "页面文件、休眠文件（只能写入残余）",
+      "owner": "研发-闸门"
+    },
+    {
+      "id": 4,
+      "data": "Agent 会话转录与事件日志",
+      "memory": "kap-host（令牌明文）",
+      "disk": "数据根 kap/<事项>/home（kwe1）",
+      "local_channels": "kap-host ↔ 内核 Node IPC；kap-host → 闸门命名管道",
+      "network": "作为推理上下文出站（令牌明文）",
+      "logs_dumps": "随包 Node 崩溃走 WER（F4）；stderr 只认日志器 JSON 行",
+      "form": [
+        "kwe1",
+        "token_plain"
+      ],
+      "enforcement": [
+        {
+          "file": "packages/kap-host/src/sealed-storage.ts",
+          "symbol": "SealedFileStorageService"
+        },
+        {
+          "file": "packages/at-rest/src/index.ts",
+          "symbol": "deriveZoneKey"
+        }
+      ],
+      "tests": [
+        "packages/kernel/test/kap-a1.test.ts",
+        "packages/kap-host/test/sealed-storage.test.ts"
+      ],
+      "residual": "文件名、目录结构、大小、时间不加密（D-48）",
+      "owner": "研发-宿主"
+    },
+    {
+      "id": 5,
+      "data": "工作区文件（草稿、表格、W 产物）",
+      "memory": "kap-host、W 执行域",
+      "disk": "kap/<事项>/work、home/w-tmp（kwe1）；W 临时目录运行结束即删、启动清扫",
+      "local_channels": "同 #4",
+      "network": "否",
+      "logs_dumps": "同 #4",
+      "form": [
+        "kwe1"
+      ],
+      "enforcement": [
+        {
+          "file": "packages/file-broker/src/broker.ts",
+          "symbol": "FileBroker"
+        }
+      ],
+      "tests": [
+        "packages/kap-host/test/search-diff.test.ts",
+        "packages/exec-wasm/test/w-sealed.test.ts",
+        "packages/kernel/test/workspace-at-rest.test.ts"
+      ],
+      "residual": "—",
+      "owner": "研发-执行域"
+    },
+    {
+      "id": 6,
+      "data": "计划 / 提问 / 后台任务输出",
+      "memory": "kap-host、内核、渲染（还原显示）",
+      "disk": "计划文件与 output.log（kwe1）；提问卡与作答入账本（sqlcipher）",
+      "local_channels": "同 #4 + kwl:event 广播",
+      "network": "计划与输出随后续轮次作为上下文出站",
+      "logs_dumps": "—",
+      "form": [
+        "kwe1",
+        "sqlcipher"
+      ],
+      "enforcement": [
+        {
+          "file": "packages/kap-host/src/sealed-storage.ts",
+          "symbol": "SealedLogFiles"
+        },
+        {
+          "file": "packages/kernel/src/services/interaction-cards.ts",
+          "symbol": "buildApprovalCard"
+        }
+      ],
+      "tests": [
+        "packages/kernel/test/kap-a1.test.ts",
+        "packages/kernel/test/interaction-cards.test.ts"
+      ],
+      "residual": "—",
+      "owner": "研发-宿主"
+    },
+    {
+      "id": 7,
+      "data": "成果（交付件）",
+      "memory": "内核（令牌形态）；导出时内核还原真名后直写到律师选定的位置（桌面客户端不经渲染进程；web 开发形态经渲染进程下载）",
+      "disk": "账本 + 块（令牌形态；律师在界面上改写的文字为原文——风险卡修改后接受的条款、审阅表里律师改的值与表名、论点提纲里改写的论点与补充要求、事项待办、缺失卡说法组里律师补的说法（本所范围，至多 30 字，须在材料里出现过；v9.4 第 20 批）、本事项审查要点 matter_review_rules（律师写或审定的为原文——审定 AI 草稿时界面经受审计的取原文通道还原代号后保存；还没审定的 AI 草稿为令牌形态；审合同的任务发起时把在用的一版快照进任务输入，团队事项的任务记录同步时随之到达事项成员的设备；来源材料因密级标志隔离时，草稿删除、据此启用的版本与任务快照里的要点清空；事项删除时随事项删除；v9.4 第 22 批，复核 Q4-02/06/07），账本整体加密，见 v9.4 第 19 批复核 Q2-14）；导出到律师在系统对话框里选定的路径（明文真名；同步文件夹与网络位置先提示）；第 15 批 B-4 起导出的 Word 套律所版式：函头（缺省自动用激活记录里的本所名称，可加两行地址电话）与律所模板的页眉页脚、页眉页脚里的图片随文件一同写出（版式取自本机 firm_doc_style，见 #19；下载审计记版式摘要）",
+      "local_channels": "桌面客户端：主进程系统对话框（dontAddToRecent）只给渲染进程一次性句柄，内核按句柄换来的路径直写；web 开发形态退回浏览器下载",
+      "network": "否",
+      "logs_dumps": "—",
+      "form": [
+        "block_cipher",
+        "plain"
+      ],
+      "enforcement": [
+        {
+          "file": "packages/kernel/src/services/export-restore.ts",
+          "symbol": "restoreArtifactBytes"
+        },
+        {
+          "file": "packages/kernel/src/services/export-file.ts",
+          "symbol": "writeExportFile"
+        },
+        {
+          "file": "apps/desktop/electron/file-dialogs.cjs",
+          "symbol": "resolveFileParams"
+        },
+        {
+          "file": "packages/docx-engine/src/house-style.ts",
+          "symbol": "restyleDocx"
+        }
+      ],
+      "tests": [
+        "packages/kernel/test/review-tools.test.ts",
+        "packages/kernel/test/token-restore-audit.test.ts",
+        "packages/kernel/test/export-file.test.ts",
+        "apps/desktop/test/file-dialogs.test.ts",
+        "packages/docx-engine/test/house-style.test.ts"
+      ],
+      "residual": "导出的明文由律师保管（同步文件夹与网络位置会先提示）；“最近使用”是否完全不记录须 Windows 实机核对",
+      "owner": "研发-桌面"
+    },
+    {
+      "id": 8,
+      "data": "审计账本",
+      "memory": "内核",
+      "disk": "账本（sqlcipher）+ 签名事件链",
+      "local_channels": "—",
+      "network": "运营元数据到控制面（匿名事项摘要）",
+      "logs_dumps": "—",
+      "form": [
+        "sqlcipher"
+      ],
+      "enforcement": [
+        {
+          "file": "packages/kernel/src/ledger-signer.ts",
+          "symbol": "createLedgerSigner"
+        }
+      ],
+      "tests": [
+        "packages/kernel/test/keys-chain.test.ts",
+        "packages/kernel/test/verify-chain-async.test.ts"
+      ],
+      "residual": "审计导出未做",
+      "owner": "研发-内核"
+    },
+    {
+      "id": 9,
+      "data": "检索查询与结果",
+      "memory": "kap-host（查询）、闸门（原文 + 改写）",
+      "disk": "去向记录 query.original/sent/decision 入账本（sqlcipher）；结果进入会话（kwe1）",
+      "local_channels": "命名管道（kap-host → 闸门）、Node IPC（闸门 → 内核）",
+      "network": "是：令牌化 + 当事人泛化；经律师逐条确认可含机构当事人名（D-25）",
+      "logs_dumps": "—",
+      "form": [
+        "sqlcipher",
+        "kwe1",
+        "tls_pinned"
+      ],
+      "enforcement": [
+        {
+          "file": "packages/egress-gate/src/search-guard.ts",
+          "symbol": "screenSearchQuery"
+        },
+        {
+          "file": "packages/egress-gate/src/approval.ts",
+          "symbol": "verifyApproval"
+        }
+      ],
+      "tests": [
+        "packages/egress-gate/test/server.test.ts",
+        "packages/egress-gate/test/approval.test.ts"
+      ],
+      "residual": "ZDR 是否覆盖检索接口未书面",
+      "owner": "研发-闸门"
+    },
+    {
+      "id": 10,
+      "data": "模型请求 / 响应",
+      "memory": "kap-host、闸门（令牌化前后）",
+      "disk": "闸门不落盘；去向记录只记字数、段数、按类别计数、上游状态",
+      "local_channels": "命名管道（kap-host → 闸门）",
+      "network": "是：闸门 → TLS + 钉住 → 中软网关 → 月之暗面；响应流不还原",
+      "logs_dumps": "—",
+      "form": [
+        "token_plain",
+        "tls_pinned"
+      ],
+      "enforcement": [
+        {
+          "file": "packages/egress-gate/src/chat-payload.ts",
+          "symbol": "processChatPayload"
+        },
+        {
+          "file": "packages/egress-gate/src/tls-policy.ts",
+          "symbol": "upstreamFetch"
+        }
+      ],
+      "tests": [
+        "packages/egress-gate/test/outbound-surface.test.ts",
+        "packages/egress-gate/test/tls.test.ts"
+      ],
+      "residual": "机构名、案情、金额、L2 案号、漏识别姓名以原文出站；召回以独立评测公布（S8）",
+      "owner": "研发-闸门"
+    },
+    {
+      "id": 11,
+      "data": "流式文字",
+      "memory": "kap-host → 内核内存尾部（≤ 4,000 字，终态清空）→ 渲染（还原显示）",
+      "disk": "不落盘（不入账本）",
+      "local_channels": "Node IPC、runs.interactions",
+      "network": "否（来自上游响应）",
+      "logs_dumps": "转储残余",
+      "form": [
+        "token_plain"
+      ],
+      "enforcement": [
+        {
+          "file": "packages/kernel/src/executor/run-progress.ts",
+          "symbol": "sanitizeProgress"
+        }
+      ],
+      "tests": [
+        "packages/kernel/test/kap-a1.test.ts",
+        "packages/kernel/test/run-progress.test.ts"
+      ],
+      "residual": "—",
+      "owner": "研发-宿主"
+    },
+    {
+      "id": 12,
+      "data": "确认卡内容（检索原文、改写、URL、费用）",
+      "memory": "内核、渲染",
+      "disk": "approvals、egress_approvals（sqlcipher）",
+      "local_channels": "签名批准凭据经闸门 IPC",
+      "network": "否（凭据只在本机校验）",
+      "logs_dumps": "—",
+      "form": [
+        "sqlcipher"
+      ],
+      "enforcement": [
+        {
+          "file": "packages/egress-gate/src/approval.ts",
+          "symbol": "canonicalCredential"
+        },
+        {
+          "file": "packages/kernel/src/services/egress-approvals.ts",
+          "symbol": "EgressApprovalStore"
+        }
+      ],
+      "tests": [
+        "packages/kernel/test/approvals-sign.test.ts"
+      ],
+      "residual": "—",
+      "owner": "研发-内核"
+    },
+    {
+      "id": 13,
+      "data": "诊断与崩溃转储",
+      "memory": "—",
+      "disk": "Electron userData/crash（不上传，启动删 > 3 天）；脱敏诊断包由律师主动导出（content_free，设备签名）；冒烟结果文件（不含内容）",
+      "local_channels": "—",
+      "network": "否（Electron 侧）；随包 Node 子进程按 WER 同意级别（F4）；脱敏诊断包在律所策略允许时可由律师逐次预览、确认后经出站闸门上传中软支持（第 9 批 S13，中软保存 7 天，运营查看留访问审计）",
+      "logs_dumps": "—",
+      "form": [
+        "content_free"
+      ],
+      "enforcement": [
+        {
+          "file": "apps/desktop/electron/secret-store.cjs",
+          "symbol": "purgeOldDumps"
+        },
+        {
+          "file": "packages/kernel/src/services/diagnostics.ts",
+          "symbol": "buildDiagnostics"
+        },
+        {
+          "file": "apps/desktop/electron/smoke-io.cjs",
+          "symbol": "writeSmokeResult"
+        },
+        {
+          "file": "packages/egress-gate/src/support-relay.ts",
+          "symbol": "relaySupport"
+        },
+        {
+          "file": "packages/kernel/src/control-plane/governance.ts",
+          "symbol": "supportUploadAllowed"
+        },
+        {
+          "file": "services/support-api/src/index.ts",
+          "symbol": "createSupportApi"
+        }
+      ],
+      "tests": [
+        "apps/desktop/test/secret-store.test.ts",
+        "packages/kernel/test/diagnostics.test.ts",
+        "apps/desktop/test/smoke-io.test.ts",
+        "packages/kernel/test/support-upload.test.ts",
+        "packages/egress-gate/test/support-relay.test.ts",
+        "services/support-api/test/support-api.test.ts"
+      ],
+      "residual": "随包 Node 子进程原生崩溃不在 Crashpad 内（P1-5）；生成恢复包时恢复码在界面（渲染进程）内存里显示，渲染进程崩溃时 userData/crash 下的转储（本机保留 ≤ 3 天、不上传）可能含恢复码（第 14 批复核 R2A-04）",
+      "owner": "研发-桌面"
+    },
+    {
+      "id": 14,
+      "data": "日志",
+      "memory": "各进程",
+      "disk": "数据根 logs/kwl-YYYYMMDD[-N].jsonl（content_free；单文件 ≤ 5 MB、保留 14 天、总量 ≤ 50 MB）；记录编号按本机盐（数据根 .log-salt）HMAC 成 12 个字母；读回时按登记表重建记录",
+      "local_channels": "子进程 stderr（只认日志器 JSON 行，其余只计数）；Electron 主进程经内核消息（内核未就绪时暂存 50 条）；更新链只交事件码",
+      "network": "否（诊断包由律师主动导出，或在律所策略允许时逐次确认后上传，见第 13 类）",
+      "logs_dumps": "—",
+      "form": [
+        "content_free"
+      ],
+      "enforcement": [
+        {
+          "file": "packages/safe-log/src/index.ts",
+          "symbol": "validateEvent"
+        },
+        {
+          "file": "packages/safe-log/src/index.ts",
+          "symbol": "relayChildStderr"
+        },
+        {
+          "file": "packages/safe-log/src/events.ts",
+          "symbol": "EVENTS"
+        }
+      ],
+      "tests": [
+        "packages/safe-log/test/safe-log.test.ts",
+        "packages/safe-log/test/log-surface.test.ts",
+        "packages/kernel/test/diagnostics.test.ts"
+      ],
+      "residual": "引擎（Kimi Code）文件日志关闭（KIMI_LOG_LEVEL=off）；W 监督进程输出只留内存",
+      "owner": "隐私负责人"
+    },
+    {
+      "id": 15,
+      "data": "剪贴板",
+      "memory": "渲染",
+      "disk": "系统剪贴板 → 剪贴板历史（Win+V）/ 云剪贴板（用户开启时）",
+      "local_channels": "—",
+      "network": "云剪贴板开启时是（产品外）",
+      "logs_dumps": "—",
+      "form": [
+        "plain"
+      ],
+      "enforcement": [
+        {
+          "file": "apps/desktop/src/components/ErrorBoundary.tsx",
+          "symbol": "diagnostics"
+        }
+      ],
+      "tests": [
+        "packages/egress-gate/test/desktop-surface.test.ts"
+      ],
+      "residual": "律师复制已还原真名的文本不受控（P1-9 主进程写剪贴板并排除历史与云同步，待实机）",
+      "owner": "研发-桌面"
+    },
+    {
+      "id": 16,
+      "data": "拖放临时文件",
+      "memory": "渲染",
+      "disk": "本产品不落临时文件；源应用（Outlook、压缩包管理器）可能已在其临时目录留明文副本（产品外）",
+      "local_channels": "同 #1",
+      "network": "否",
+      "logs_dumps": "—",
+      "form": [
+        "plain"
+      ],
+      "enforcement": [],
+      "enforcement_note": "产品外残余：只能写入残余并提示",
+      "tests": [],
+      "residual": "从邮件拖入的附件在源应用临时目录另有副本",
+      "owner": "产品"
+    },
+    {
+      "id": 17,
+      "data": "打印 / 导出副本（结案归档、离所交接归档、删除回执、设备恢复包）",
+      "memory": "渲染、内核",
+      "disk": "结案归档 ZIP（开放格式明文）、删除回执 JSON（无内容）、设备恢复包（scrypt）；离所交接（第 14 批续 B-10）引导离所的人把名下只在本机的事项逐个导出归档（同一格式的明文 ZIP；建议文件名为“离所归档-事项编号后六位-日期.zip”，不带事项标题；界面提示交给律所或接手同事、不要存到个人网盘）",
+      "local_channels": "同 #7",
+      "network": "否",
+      "logs_dumps": "—",
+      "form": [
+        "plain",
+        "scrypt"
+      ],
+      "enforcement": [
+        {
+          "file": "packages/kernel/src/services/matter-archive.ts",
+          "symbol": "buildMatterArchive"
+        },
+        {
+          "file": "packages/kernel/src/services/matter-lifecycle.ts",
+          "symbol": "purgeMatter"
+        },
+        {
+          "file": "packages/kernel/src/devices.ts",
+          "symbol": "stageDeviceRecovery"
+        }
+      ],
+      "tests": [
+        "packages/kernel/test/matter-archive.test.ts",
+        "packages/kernel/test/device-recovery.test.ts"
+      ],
+      "residual": "归档 ZIP 无口令选项（P2-6；离所交接会一次导出名下全部个人事项，这一残余随之放大，口令选项在 G1 一并处理——第 15 批复核 R15A-15）；恢复码卡片可打印（只打印卡片本身、界面提示勿打印成 PDF 存到网盘）：Windows 打印假脱机文件在打印完成前落在系统目录，选“打印到 PDF/OneNote”会生成可能位于同步盘的文件（第 14 批复核 R2A-04）",
+      "owner": "研发-内核"
+    },
+    {
+      "id": 18,
+      "data": "更新包",
+      "memory": "主进程",
+      "disk": "electron-updater 本地缓存（公开内容）",
+      "local_channels": "—",
+      "network": "是（登记的第二出口，D-58）：主进程直连固定更新主机，SPKI 钉住，只发版本号与全零灰度编号",
+      "logs_dumps": "—",
+      "form": [
+        "public",
+        "tls_pinned"
+      ],
+      "enforcement": [
+        {
+          "file": "apps/desktop/electron/update-verify.cjs",
+          "symbol": "verifyReleaseManifest"
+        },
+        {
+          "file": "apps/desktop/electron/update-verify.cjs",
+          "symbol": "tlsPinMatch"
+        }
+      ],
+      "tests": [
+        "apps/desktop/test/update-verify.test.ts"
+      ],
+      "residual": "缓存目录位置须实机核对",
+      "owner": "研发-发布"
+    },
+    {
+      "id": 19,
+      "data": "设置与本机标记",
+      "memory": "主进程、内核、渲染",
+      "disk": "release.json 在 asar 内；律所策略与事项设置在账本；渲染 localStorage 只存登记的偏好键；管道盐、非内容索引版本标记；签名的法规库与方法模板（public；在线更新的副本在 <工作区>/content/，选用以账本登记与签名通道清单 seq 为准，迁移 0029）；示例事项标记 sample_matters（迁移 0028，虚构内容，移除后留墓碑行；第 45 批起只在开发与演示的开关 ZR_DEMO_SAMPLES=1 下放入，安装包不放）；文书版式 firm_doc_style（迁移 0052：函头名称与地址电话、正文字体字号、页码，以及律所上传的 Word 模板——只存样式、页眉页脚及其中的图片、主题、编号与页面设置，不存模板的正文、批注与作者，SQLCipher；页眉页脚文字由上传的人决定，可能写有具体案件信息：上传后在设置里原样给律师看，像案号、“诉”、书名号标题的会提示，第 15 批复核 R15A-09）；修订署名 firm_doc_style.redline_author（Word 修订里显示的作者名，这台电脑设置，至多 30 字）；我的写作偏好 user_writing_prefs（迁移 0064：按律师本人存落款、法条引用写法与其他格式说明，至多 200 字；只存格式与文风——保存时内核拦下像本人事项当事人名称、案号、金额、证件号的内容；发起 AI 任务时快照进任务输入并随提示词令牌化发出，团队事项的任务记录同步给同事时去掉这一项；保存时按本人全部事项的令牌词典查当事人（含简称、别名，复核 Q4-01）；v9.4 第 22 批；删除：本人清空，或离所交接最后一步“清除”（本人电脑上的主要靠这一步；管理员在共用电脑上移出该成员时也一并删除）；已发起任务的输入快照里的副本按事项留存规则走，不随清除删除；v9.4 第 23 批；本所范本库 firm_templates / firm_template_clauses（迁移 0065，v9.4 第 24 批：律师主动放入、去掉客户信息的合同范本，按条存正文；按律所存在这台电脑、这台电脑上的成员共用，不同步、不上云；范本库本身不发给 AI——只在审查工作台本机比对后给律师看；律师“照这条改”并接受的文字作为修改后的卡片文本、“放进事项”的范本作为事项材料，和事项里其他内容一样随任务发出（复核 Q6-02）；放入时内核按本人全部事项的令牌词典查当事人（含简称、别名）并查案号、证件号、手机号、银行账号、邮箱，查到的不放或换成【】占位符；删除：律师在“方法与模板”里删除，行直接删去））；客户授权的默认设置 user_ai_authorization（迁移 0070：律师本人是否声明“委托合同含 AI 辅助条款”与修改时间，不含案件信息，不同步、不上云）",
+      "local_channels": "—",
+      "network": "策略来自控制面（签名链）；法规库与方法模板更新经出站闸门分发通道（地址随构建固定、钉住，只带席位令牌，不带事项信息）；我的写作偏好随 AI 任务的提示词令牌化后经出站闸门发给模型（同第 10 类，v9.4 第 22 批，复核 Q4-12）；本所范本库不出站，照着改并接受的文字与放进事项的范本按事项内容走第 10 类（v9.4 第 24 批）",
+      "logs_dumps": "—",
+      "form": [
+        "plain",
+        "public"
+      ],
+      "enforcement": [
+        {
+          "file": "apps/desktop/electron/release-config.cjs",
+          "symbol": "loadReleaseConfig"
+        },
+        {
+          "file": "packages/kernel/src/config.ts",
+          "symbol": "pipeSalt"
+        },
+        {
+          "file": "packages/kernel/src/skills-bundle.ts",
+          "symbol": "materializeSkillsBundle"
+        },
+        {
+          "file": "packages/kernel/src/services/content-updates.ts",
+          "symbol": "ContentUpdater"
+        },
+        {
+          "file": "packages/kernel/src/services/doc-style.ts",
+          "symbol": "setDocTemplate"
+        },
+        {
+          "file": "packages/kernel/src/services/firm-templates.ts",
+          "symbol": "findHits"
+        }
+      ],
+      "tests": [
+        "apps/desktop/test/release-config.test.ts",
+        "packages/kernel/test/pipe-salt.test.ts",
+        "packages/kernel/test/skills-bundle.test.ts",
+        "packages/kernel/test/privacy-residency.test.ts",
+        "packages/kernel/test/content-updates.test.ts",
+        "packages/kernel/test/doc-style.test.ts",
+        "packages/kernel/test/v94-b24.test.ts"
+      ],
+      "residual": "Local Storage 为明文 leveldb（只存偏好与版本号）；在线更新装上的法规库与方法模板副本在 <工作区>/content/（本人可写）：启动时核验，核验通过后到下次启动之间被本机改动的页会被直接读到（复核 S8A-12）",
+      "owner": "研发-桌面"
+    },
+    {
+      "id": 20,
+      "data": "密钥材料（DB 主密钥、设备签名/加密私钥、律所根私钥、事项密钥、工作区密钥）",
+      "memory": "主进程（DB 主密钥交付后置 null）、内核、kap-host（区密钥只在内存）",
+      "disk": "userData/ledger-key（dpapi）；userData/ledger-key.prev-<时刻>（从备份恢复采用旧电脑主密钥时把本机原主密钥的 DPAPI 包裹复制留档，不自动删除：本机以前留下的数据要用它才能打开；第 14 批复核 R2A-05/R2B-15）；<数据根>/.unreadable-<时刻>/ledger-key 及同目录里的激活记录与工作区（主密钥解封失败、律师选“用恢复包恢复”时改名到这里，不删除；原主密钥找不回来时这些密文已不可读，由所内 IT 决定清理；v9.3 主文 §9 第 7 项）；keys/*.json（kwl_sealed）；matter_keys、工作区密钥包裹（sqlcipher 内再以设备公钥包裹）；设备恢复包（scrypt）",
+      "local_channels": "kernel.init 一次性消息；区密钥随每次运行经 IPC 下发",
+      "network": "否",
+      "logs_dumps": "内核/主进程转储可能含密钥（3 天）",
+      "form": [
+        "dpapi",
+        "kwl_sealed",
+        "sqlcipher",
+        "scrypt"
+      ],
+      "enforcement": [
+        {
+          "file": "packages/kernel/src/devices.ts",
+          "symbol": "configureSecretSealing"
+        },
+        {
+          "file": "apps/desktop/electron/secret-store.cjs",
+          "symbol": "loadOrCreateDbKey"
+        }
+      ],
+      "tests": [
+        "packages/kernel/test/secret-files.test.ts",
+        "apps/desktop/test/secret-store.test.ts",
+        "packages/kernel/test/device-recovery.test.ts"
+      ],
+      "residual": "设备签名密钥在内核进程（D-24）、根私钥在成员机（D-41）、同一 Windows 账户可经 DPAPI 解封（Y5 §7.3）",
+      "owner": "隐私负责人"
+    },
+    {
+      "id": 21,
+      "data": "进所评测的文书与标注（S8 来源 B：律所人员在本机标注的文书原文、标注区间、一致性与裁决中间结果）",
+      "memory": "渲染进程（标注界面）、内核（打开、一致性、裁决、评测时的瞬时计算，不留存）、解析进程（打开 Word/PDF 时抽取文字）",
+      "disk": "只在律所人员经系统对话框选定的位置（标注文件 JSONL 含原文，不得写进数据根）；不进块存储、账本与事项",
+      "local_channels": "渲染进程 ↔ 主进程 ↔ 内核（eval.* 方法；打开与保存只认一次性句柄）",
+      "network": "否",
+      "logs_dumps": "审计只记动作（eval.open / eval.recall / eval.save_work / eval.save_report），不记文书名与内容；进程崩溃转储与系统页面文件可能含正在标注的原文（与其他内存中的案卷同一残余）",
+      "form": [
+        "plain",
+        "content_free"
+      ],
+      "enforcement": [
+        {
+          "file": "packages/kernel/src/services/recall-eval.ts",
+          "symbol": "reportFileText"
+        },
+        {
+          "file": "packages/kernel/src/services/export-file.ts",
+          "symbol": "writeExportFile"
+        },
+        {
+          "file": "apps/desktop/electron/file-dialogs.cjs",
+          "symbol": "SAVE_METHODS"
+        }
+      ],
+      "tests": [
+        "packages/kernel/test/recall-eval.test.ts"
+      ],
+      "residual": "标注文件含原文，保管与删除由律所负责（标注规范 v1 §8 第 5 步）；保存到“文档”等位置后可能被 OneDrive 等同步或被 Windows 搜索编入索引（保存时对同步与网络位置有提示）；导出的报告只含计数，由律所自行交给中软；评测只对律所管理员与合伙人开放",
+      "owner": "隐私负责人"
+    },
+    {
+      "id": 22,
+      "data": "期限提醒（事项、期限类型、期限日、提醒时间、备注、通知谁；收到的提醒；第 10 批 S9）",
+      "memory": "内核（巡检时加密、解密与核对签名）；渲染进程（提醒页显示）；主进程只收到条数",
+      "disk": "账本 reminders / reminder_inbox / reminder_holds / reminder_rejects（SQLCipher；只在本机，不进共享文件夹同步；reminders.cloud_body 缓存当前版本已封好的各设备密文）；事项删除时：云端没有副本的提醒整行删除，有副本的抹去期限类型、日期、提醒时刻与备注，云端删除后整行删除；收到的提醒删除",
+      "local_channels": "渲染进程 ↔ 主进程 ↔ 内核（reminders.* 方法）；内核 → 主进程广播只有 {type:\"reminder.due\", count}",
+      "network": "配置了中软通知服务时：经出站闸门通知通道发出触发时刻（到分钟）、接收设备编号与每台设备一份密文（明文补齐到 2 KiB 后用接收设备 X25519 公钥加密，附加数据绑定租户/提醒/版本/设备，正文由发出设备签名）；中软另存建立者成员编号、版本号、最后修改时刻、每成员每日写入次数与撤销墓碑，保存至触发后 7 天，撤销与删除事项后在下次联网巡检成功时删除；取到时提醒约每分钟一次（反映电脑何时开机）",
+      "logs_dumps": "审计记动作（reminder.create / update / cancel）、提醒编号与事项编号（只在本机）；运行记录只记丢弃条数（REMINDER_REJECTED），本机按原因累计丢弃条数供提醒页提示；系统通知只写条数（通知中心会留存通知文字），不写事项名、期限类型与备注",
+      "form": [
+        "sqlcipher",
+        "tls_pinned",
+        "content_free"
+      ],
+      "enforcement": [
+        {
+          "file": "packages/kernel/src/services/reminders.ts",
+          "symbol": "ReminderService"
+        },
+        {
+          "file": "packages/keys/src/device-seal.ts",
+          "symbol": "sealForDevice"
+        },
+        {
+          "file": "packages/egress-gate/src/notify-relay.ts",
+          "symbol": "notifyRelayAllowed"
+        },
+        {
+          "file": "services/notify-api/src/index.ts",
+          "symbol": "createNotifyApi"
+        },
+        {
+          "file": "apps/desktop/electron/main.cjs",
+          "symbol": "notifyReminder"
+        }
+      ],
+      "tests": [
+        "packages/kernel/test/reminders.test.ts",
+        "packages/keys/test/device-seal.test.ts",
+        "packages/egress-gate/test/notify-relay.test.ts",
+        "services/notify-api/test/notify-api.test.ts"
+      ],
+      "residual": "中软看得到触发时刻与接收设备（可推断某天前后有期限、哪几台设备属同一事项团队）、建立者与改动次数、取提醒请求的时刻（推断开机时间）；被攻破的云端可以不投递，或在墓碑到期后重放已撤销条目（接收方只认更高版本，挡不住首次重放）；接收设备的私钥与其他事项密钥同一保护（DPAPI，TPM 待 G1）；已送达设备上的提醒随该设备账本保存，删除事项只删本机——其他设备上的收件待同步删除指令（G1）；提醒只保存在建立它的电脑上，换电脑或该电脑停用后失效",
+      "owner": "研发-内核"
+    },
+    {
+      "id": 23,
+      "data": "团队事项经中软共享中继同步的段与块（第 11 批 S11：段头明文含事项编号、写入设备证书、纪元、面向各设备的密钥包裹；段体与材料块为密文）",
+      "memory": "内核（导出时加密、上传前切块；取回后先核验段签名与证书链再落盘；解开段体读块清单；材料按“解开后的摘要 = 块名”核对后才放进本机块库）；闸门（块字节过境，上下行两头重算摘要，不解析、不记录）",
+      "disk": "本机 <数据根>/relay：outbox（待发的本机段）、inbox（已核验、待钥或待块的同事段，至多 5000 段 / 2 GiB）、ready（待摄取的段与暂存的密文块）——发出或摄取后即删，待钥、待块与摄取延后的 30 天后删，本机加入之前纪元的段即时删；账本 relay_export_state / relay_matters / relay_kv / relay_retry / relay_outbox / relay_blob_wait / relay_imported（SQLCipher，只有编号、游标、摘要、计数、重置代数与错误代码；relay_imported 记“经同步收下的行”的表名与行编号，共享文件夹介质的摄取也记，未开中继的律所同样写入）；成员行另存作者设备的签名与证书（公钥与成员编号，随行转发）；sync_alerts 记团队同步告警（纪元冲突、负责人无法确认，第 12 批起另有成员链的四种：事项编号、纪元、计数、原因说明，以及另一方的设备编号与成员编号；事项删除时清掉）；第 12 批成员链 member_events（每个团队事项的成员事件：作者设备证书、成员编号、角色、纪元号、密钥指纹与各包裹密文的摘要、前序事件编号；在段体内随事项密钥加密转发，两种介质都有）/ member_chain（本机采用的起点）/ chain_paused_export（暂停期间只发成员链的摘要）；事项删除时清理该事项的收发件、暂存块与各表行",
+      "local_channels": "内核 ↔ 闸门（Node IPC，{t:\"relay\"}，块以 base64 过境）",
+      "network": "律所策略允许（share_relay，须管理员签名）且配置了中软共享中继时：经出站闸门共享中继通道发出与取回 ≤ 4 MiB 的块（按密文摘要寻址）与段登记（随机事项编号、段编号、段摘要与确切大小、块摘要、密钥纪元、读者设备编号；写入成员编号取自凭据；第 12 批起另有控制成员移交请求，只带接收者的成员编号）；中软保存块与登记直到律所退约整体删除（关闭开关后已保存的仍在；单个事项的团队删除指令待 G1；中继上的事项状态异常时运营可按事项重置）；未登记的块 24 小时后删除；取新段为长轮询（反映设备何时在线）",
+      "logs_dumps": "运行记录只记失败事件（KERNEL_RELAY_PUSH_FAILED）与错误代码；审计只在手动“立即同步”有收发时记一条（内容为发出与收到段数的摘要）；中继服务只有登记日志（第 12 批起另有控制成员移交记录：事项编号、移交双方的成员编号、发起设备编号、时刻）与运营访问审计（整体删除、按事项重置），不记内容",
+      "form": [
+        "sqlcipher",
+        "block_cipher",
+        "tls_pinned",
+        "content_free"
+      ],
+      "enforcement": [
+        {
+          "file": "packages/kernel/src/services/share-relay.ts",
+          "symbol": "ShareRelaySync"
+        },
+        {
+          "file": "packages/kernel/src/sync-engine.ts",
+          "symbol": "relayChunks"
+        },
+        {
+          "file": "packages/egress-gate/src/share-relay.ts",
+          "symbol": "shareRelayAllowed"
+        },
+        {
+          "file": "services/relay-api/src/index.ts",
+          "symbol": "createRelayApi"
+        },
+        {
+          "file": "packages/firm-trust/src/policy.ts",
+          "symbol": "shareRelayAllowed"
+        }
+      ],
+      "tests": [
+        "packages/kernel/test/share-relay.test.ts",
+        "packages/egress-gate/test/share-relay.test.ts",
+        "services/relay-api/test/relay-api.test.ts"
+      ],
+      "residual": "中软看得到：律所有多少团队事项（匿名编号）、每个事项的段数、每段条数与事件序号区间、确切大小（材料封装未按长度分档填充，可按大小比对已知文件）与时间、哪些设备是哪个事项的读者、各事项控制成员的更替（移交双方的成员编号、发起设备与时刻）；段头明文里的写入设备证书（成员编号、角色、公钥——成员编号由律所设定，可能含姓名拼音）与各纪元面向各设备的密钥包裹（密文，含创建时刻、已移出成员的设备与是否启用恢复托管：可还原团队加入、移出的时间线）；设备何时在线。被攻破的中继可以扣留、延迟或丢弃段（换掉的内容会被拒收），也可以谎报控制成员，阻止本机经中继调整成员（可用性）；读者名单与纪元按“控制成员（第一个经中继登记该事项的成员，或此后经移交接手的负责人）才能提升纪元、加读者”执行，只是纵深防御；知道事项编号的所内设备可以在负责人第一次经中继同步之前抢先登记，成为控制成员：还没收到过该事项的成员设备只从控制成员签发的段引导，会把抢先者认作负责人、用抢先者选的密钥（机密性后果，不只是可用性）；负责人电脑只在调整成员时提示“状态异常”（抢先者把负责人列为读者时发件照常成功），须运营按事项重置。重置由中继以“重置代数”告知：各成员电脑在下一次发件、取新段或核对（至多 6 小时；手动“立即同步”立即核对）时发现，本机写入的内容全量重发；还不知道重置的正常客户端的登记被中继拒收，不会抢先成为新的控制成员（改过的客户端可以绕过；重置会重新打开抢先窗口，持续防抢先须创世见证，G1）；“事项不存在”的回复只对重置前的读者告知重置次数（重置后抢先登记的设备随即成为读者，可以取历史得知重置次数）；已不再收发的设备（离所、被吊销）写过的内容不再上传，重置后加入的成员拿不到（事项先经共享文件夹、后开中继时同理）。控制成员由中继告知、未经认证：被攻破的中继可以谎报控制成员，阻止本机调整成员、让新成员与新设备引导不了，与所内任一设备串通时可让伪造的首段被采信；卸任的控制成员仍被当作引导来源（创世与成员日志由控制面见证在 G1）；控制成员可经移交接口把控制权交给另一位负责人（第 12 批：中继登记日志记移交双方的成员编号、发起设备与时刻）；控制成员没有移交就离所或被移出的，该事项经中继的成员调整暂不可用，须运营按事项重置后由新负责人先登记；律所明确关闭中继开关后本机放行成员调整（策略过期或回退时不放行）；重新开启前须办理重置，否则这期间的移出在中继上不生效、被移出者仍经中继收到其他成员的新内容（界面持续提示）；共享文件夹介质上，能写共享文件夹的所内设备可以抢先给新成员送伪造的“首段”（首同步信任签发者给出的事项行与它转发的成员行；成员行带作者签名，转发的行可核验作者，但签发者可以不转发某些行；签名不带新鲜度，转发者可以给出某行的旧版本：被移出的共同负责人如果没收到移出他的那一段，可以把同号纪元的密钥塞进当时离线的成员设备（两种介质的共享文件夹路径；中继上被移出者已不是读者）——缓解：同号纪元分叉（只记在册负责人签发的段）记为持久告警、界面写明冲突另一方，未解除前该设备暂停发出该事项，只有冲突另一方发来的新纪元能解除（被移出者再轮换一次解除不了）；负责人在本机重新轮换即清除本机的冲突；两位共同负责人并发轮换后，其中一位的移出可能丢失，须由负责人重做；作者设备被吊销后，它吊销前写的行只在转发者可信时收下（吊销没有时间依据：吊销生效前被负责人设备收下的伪造成员行会经转发扩散）；原负责人设备被吊销后，离线的成员设备如果没有其他在用的负责人设备可确认负责人成员行，就认不出新负责人——缓解：持久告警、该设备暂停发出该事项、暂不能调整成员，在用的负责人同步一次后自动恢复，负责人都已离所须联系中软客服；升级前同步过、作者设备已吊销或再没导出过的成员行没有签名，之后加入的成员引导不了；这些问题由第 12 批的带因果链的成员日志解决（成员事件签名、前序摘要、逻辑时钟，存量成员关系由在册负责人重新签署）；成员行序号已是按事项合并的逻辑时钟；既有问题，事项创世记录由控制面见证留 G1）；设备被吊销后在中继刷新吊销名单之前（约 30 秒、至多 10 分钟）仍可能取到新密文；持有密钥的成员设备在被移出前已取回的内容仍可读；事项删除只删本机，中继与其他成员设备上的密文待团队删除指令（G1）。移出律所（第 14 批续 B-10）不自动把这个人移出他参加的团队事项：被停用的电脑仍持有当前纪元的事项密钥——中继方式下中继刷新吊销名单后拒绝它（空窗同上），共享文件夹方式下只剩文件夹的访问权限一道门；负责人电脑会提醒“事项里还有电脑已全部停用的成员”，确认离所后移出（换新密钥）才断开此后的新内容；自动换密钥未做（第 15 批复核 R15A-05）",
+      "owner": "研发-内核"
+    },
+    {
+      "id": 24,
+      "data": "本机激活记录与开通暂存（第 13 批开通与成员入组）：activation.json（租户与成员编号、律所显示名、本人显示名、角色、创始或成员、激活时刻）；成员等待批准期间的 onboarding.json（同上 + 申请编号与核对码）；认领凭据、入组时生成的设备密钥与取回的证书（暂存）",
+      "memory": "内核（兑换应答与认领凭据只在调用期间）",
+      "disk": "<数据根>/activation.json 与 onboarding.json（明文，只有编号、两个显示名与状态；0600、临时文件改名原子写；onboarding.json 入组完成即删）；<数据根>/onboarding-failed.json（入组在本机没有生效时的原因代码与时刻，不含编号与姓名；重新兑换或“重新输入”即删）；<工作区>/keys/activation-claim.json、join-pending.json、join-approved.json（kwl-sealed/1 封装；activation-claim.json 在根公钥登记成功后删除，登记始终不成功时保留到重新激活；join-pending.json 在取回证书或“重新输入”时删除；join-approved.json 在应用成功后删除，应用被拒时连同 activation.json 一并删除、回到待激活）；待激活占位工作区 <数据根>/pending-activation（其中有占位账本与占位律所根，无业务数据）在按真实身份启动时整体删除（普通删除，非密码学擦除）；管理员电脑的账本 member_invitations（本机发出的邀请：成员标识、角色、姓名、邀请码本机秘密段、状态；SQLCipher）；主密钥解封失败、律师选“用恢复包恢复”时，上述明文记录（activation.json、onboarding.json 等）连同工作区改名到 <数据根>/.unreadable-<时刻>/，不自动删除、由所内 IT 决定清理（v9.3 主文 §9 第 7 项，复核 RB16A-15）",
+      "local_channels": "内核 ↔ 闸门（Node IPC，控制面通道）",
+      "network": "开通码 / 邀请码（一次性）、认领凭据、成员设备的两把公钥与持有证明，经出站闸门的控制面通道发往中软控制面；控制面只存码的 HMAC 与凭据摘要；成员显示名只用于兑换时回显，提交入组申请、消费、作废或过期即清空；码记录与入组申请记录（成员编号、设备编号、公钥、证书）在结束 31 天后删除（控制面每小时清理）；管理员批准时上传由律所根签发的设备证书与律所公钥包（只有公钥与律所根签名）",
+      "logs_dumps": "运行记录只记事件码（KERNEL_ONBOARDING_*、KERNEL_JOIN_STAGED_REJECTED），不记码、律所或成员；本机审计记邀请、批准与拒绝（成员编号、设备编号）；控制面运营审计记开通码签发、兑换、邀请、入组申请与批准（码记录编号与申请编号，无姓名）",
+      "form": [
+        "plain",
+        "kwl_sealed",
+        "tls_pinned",
+        "content_free"
+      ],
+      "enforcement": [
+        {
+          "file": "packages/kernel/src/services/onboarding.ts",
+          "symbol": "OnboardingService"
+        },
+        {
+          "file": "packages/kernel/src/devices.ts",
+          "symbol": "applyStagedJoin"
+        },
+        {
+          "file": "packages/egress-gate/src/cp-relay.ts",
+          "symbol": "cpRelayAllowed"
+        },
+        {
+          "file": "services/control-plane/src/server.ts",
+          "symbol": "claimOf"
+        }
+      ],
+      "tests": [
+        "packages/kernel/test/onboarding.test.ts",
+        "services/control-plane/test/onboarding.test.ts",
+        "services/control-plane/test/onboarding-hardening.test.ts",
+        "packages/kernel/test/onboarding-tamper.test.ts"
+      ],
+      "residual": "创始设备仍持律所根（D-41 未变，根私钥离线分持见 C6）；律所核对码作为辅助的人工核对；入组申请与批准经邀请码本机秘密段（80 bit，只在管理员电脑与成员手里）做双向 HMAC（覆盖两把公钥、成员与角色、证书、律所根与恢复托管公钥，以及律所名称与成员姓名——第 14 批第二轮复核 A-03 余项），控制面替换其中任何一项都会被双方识破；邀请码连同秘密段一起泄露给第三方时，第三方可抢先入组（管理员核对入组核对码可发现）；activation.json 明文含本人与律所显示名（成员机的显示名经管理员的 MAC 确认）",
+      "owner": "研发-内核"
+    },
+    {
+      "id": 25,
+      "data": "律所治理与控制面同步元数据（第 6～12 批）：律所策略、连接器登记、设备目录与吊销墓碑、许可与席位、控制面文档高水位、待发动作、告警、中软运营审计流水的本机留存与签名页、匿名事项摘要的待发队列、诊断包上传记录",
+      "memory": "内核（控制面客户端、律所治理）",
+      "disk": "账本 firm_policies / firm_connectors / firm_trust / cp_documents / cp_high_water / cp_pending_actions / cp_revoked_devices / cp_alerts / cp_audit_records / cp_audit_signed_page / seats / member_removals / anon_matter_outbox / support_uploads（SQLCipher；只有编号、版本、签名文档、计数与错误代码，匿名事项摘要只含事项密级与策略指纹，不含标题与当事人）；cp_alerts 另有告警说明文字（≤ 600 字：设备编号、成员编号、事项编号、版本号，吊销后终止任务失败一条另带 120 字以内的异常信息；不含姓名原文与事项标题——成员编号由律所或运营设定，创始成员的可能是姓名拼音；第 14 批核实复核 A-17 ②）",
+      "local_channels": "内核 ↔ 闸门（Node IPC，控制面通道）",
+      "network": "经出站闸门控制面通道：设备公钥与证书、席位申请、匿名事项摘要、本机吊销；中软控制面保存租户、设备目录、席位、额度池与按席位的点数用量（不含内容）、运营审计流水（动作代码、执行者编号、目标编号与结果；中软运营的操作记到按人的运营编号——op_ 加数字工号、不是姓名（名册校验强制），v9.3 A-10，律所本机留存的流水里同样是运营编号）；移出成员（第 14 批续 B-10）时按成员编号向中软发“释放席位”请求（/v1/seats/<成员编号>/revoke；断网或失败时记在 member_removals，随下次控制面同步重试；第 15 批复核 R15A-16）",
+      "logs_dumps": "运行记录只记事件码；审计只记动作与编号",
+      "form": [
+        "sqlcipher",
+        "tls_pinned",
+        "content_free"
+      ],
+      "enforcement": [
+        {
+          "file": "packages/kernel/src/control-plane/governance.ts",
+          "symbol": "FirmGovernance"
+        },
+        {
+          "file": "packages/kernel/src/control-plane/client.ts",
+          "symbol": "ControlPlaneClient"
+        },
+        {
+          "file": "packages/egress-gate/src/cp-relay.ts",
+          "symbol": "cpRelayAllowed"
+        }
+      ],
+      "tests": [
+        "packages/kernel/test/control-plane.test.ts",
+        "packages/kernel/test/cp-dispositions.test.ts",
+        "services/control-plane/test/quota-audit.test.ts",
+        "services/control-plane/test/ops-routes.test.ts"
+      ],
+      "residual": "中软控制面能看到律所有多少设备、席位与匿名事项及其点数用量与时间；成员编号由律所设定，可能含姓名拼音（经开通码激活的成员编号为随机串）；运营编号对应哪位中软员工只在中软内部（安全管理员）可查",
+      "owner": "研发-内核"
+    },
+    {
+      "id": 26,
+      "data": "事项与任务执行元数据：事项头（标题、立场、客户与相对方名称、关键日期）、成员与角色、任务与尝试、步骤检查点、工具调用记录与运行事件（含引用核验裁决里的被引法条原文）、定时任务、所内节点与 IM 收件队列、用量计数、示例事项标记",
+      "memory": "内核",
+      "disk": "账本 tenants / users / memberships / matters / runs / attempts / step_checkpoints / tool_operations / run_events / scheduled_jobs / node_tasks / im_bindings / im_connector_lease / im_intents / usage_records / sample_matters / schema_migrations（SQLCipher；事项头与运行事件含案件信息，按事项删除时一并密码学擦除或清除并登记 redacted_rows）",
+      "local_channels": "内核 ↔ 界面（preload 7 个方法）",
+      "network": "不出网（匿名事项摘要见第 25 类；团队事项同步见第 23 类）",
+      "logs_dumps": "运行记录只记事件码与错误代码",
+      "form": [
+        "sqlcipher"
+      ],
+      "enforcement": [
+        {
+          "file": "packages/kernel/src/db.ts",
+          "symbol": "KernelDb"
+        },
+        {
+          "file": "packages/kernel/src/services/matter-lifecycle.ts",
+          "symbol": "purgeMatter"
+        }
+      ],
+      "tests": [
+        "packages/kernel/test/matter-lifecycle.test.ts",
+        "packages/kernel/test/privacy-residency.test.ts"
+      ],
+      "residual": "事项标题与客户、相对方名称为原文（界面要显示）；律所成员姓名原文（users.display_name，含管理员邀请时填写的被邀请人姓名；复核 A-17）；同一 Windows 账户下能拿到数据库主密钥的程序可解",
+      "owner": "研发-内核"
+    },
+    {
+      "id": 27,
+      "data": "无事项问答（问答页）：问题与回答文字、问答令牌表（每个会话一把令牌密钥）",
+      "memory": "内核（问答服务）；回答生成中的部分文字经主进程转给渲染进程显示（不落盘）",
+      "disk": "账本 qa_conversations / qa_messages / qa_tokens（SQLCipher；问题按当事人词典与规则令牌化后保存，回答为模型输出的令牌形态，显示时还原）",
+      "local_channels": "内核 ↔ 闸门（模型请求）；回答生成中的部分文字以 chat.delta 广播（只带一次性流编号与按本会话令牌表还原后的文字，不带会话编号与令牌形态）：内核 → 主进程白名单转发（只重组流编号与文字两项）→ 渲染进程；开发形态另经开发桥 GET /events（同源与令牌校验）。末尾 32 字与未闭合的代号先不推，回答正常结束后推全文（复核 Q5-02、Q5-05，v9.4 第 23 批）",
+      "network": "经出站闸门到中软网关与月之暗面（与第 10 类同一出口与留存口径）；问题先经全部事项的当事人词典检查，命中即拦截",
+      "logs_dumps": "运行记录只记事件码",
+      "form": [
+        "sqlcipher",
+        "token_plain",
+        "tls_pinned"
+      ],
+      "enforcement": [
+        {
+          "file": "packages/kernel/src/services/qa-chat.ts",
+          "symbol": "QaChatService"
+        }
+      ],
+      "tests": [
+        "packages/kernel/test/w1.test.ts",
+        "packages/kernel/test/qa-stream.test.ts"
+      ],
+      "residual": "问答历史在本机留存到律师删除（问答页“删除这个问答”；离所交接最后一步一并清除，v9.4 第 23 批）；漏识别的姓名以原文保存与发出（同第 10 类）；流式显示时，网关内容安全命中之前已推出的文字会先显示、再换成“未能取得回答”（不保存；命中词本身因留尾不出现；10-23 拍板接受这种“先显示后撤回”，问答页写明，偏离 D-142）",
+      "owner": "研发-内核"
+    },
+    {
+      "id": 28,
+      "data": "整机恢复包与本机备份（第 14 批）：恢复包（激活信息、数据库主密钥、设备私钥与证书、创始设备的律所根与 5 份恢复份额）；备份位置里的账本快照、块、工作区、封装的密钥文件与签名清单；备份状态",
+      "memory": "内核（生成与打开恢复包时的明文只在调用期间；恢复码不落盘、只返回一次）",
+      "disk": "恢复包：律师在系统对话框里选定的位置（不得在数据根内），AES-256-GCM（密钥 = HKDF(恢复码秘密)），外层明文只有律所显示名、设备编号、恢复码集编号与创建时刻；备份（格式 v2）：<位置>/KimiWorkLegal-backup/<不透明编号>/（编号由主密钥派生，看不出律所与设备），objects/<sha256> 按内容寻址存放（SQLCipher 页、按事项密钥加密的块、KWE1 工作区、按主密钥封装的密钥文件；另有少量明文：随包公开内容与 .pipe-salt 等非秘密配置），manifest.kwlb 为加密清单（文件路径、大小、摘要以主密钥派生的密钥 AES-256-GCM 加密）+ 设备签名；location.kwlm 为备份盘标记（只有 16 字节随机编号，不含律所、设备或路径；每次备份前核对，对不上即停、不在别的盘上写任何东西——复核 R2B-06）；<工作区>/backup.json（备份位置、备份盘标记编号、序号、时刻、错误代码）与 backup-index.json（相对路径、大小、修改时间、摘要）只在本机、不进备份；恢复时暂存在 <数据根>/.restore-<随机>/，成功后改名为工作区，失败即删除；<数据根>/activation.pending.json（待生效的激活记录，主密钥采用成功后改名为 activation.json，否则连同恢复出的工作区一并删除）",
+      "local_channels": "内核 → 主进程（只在待激活模式下恢复时：采用旧主密钥的请求，主进程用本机 DPAPI 重新包裹并留档原文件，不转发界面）",
+      "network": "不出网；备份位置若是同步盘或网络盘（律师选择），网盘服务商能看到对象数量、大小与写入时间，看不到文件名、目录结构与内容",
+      "logs_dumps": "运行记录只记事件码与文件数（KERNEL_BACKUP_*、KERNEL_RESTORED_FROM_BACKUP、MAIN_ADOPT_KEY_*）；审计记生成与试解恢复包、配置备份位置",
+      "form": [
+        "kwl_sealed",
+        "sqlcipher",
+        "block_cipher",
+        "kwe1",
+        "content_free"
+      ],
+      "enforcement": [
+        {
+          "file": "packages/kernel/src/services/recovery-package.ts",
+          "symbol": "sealRecoveryPackage"
+        },
+        {
+          "file": "packages/kernel/src/services/backup.ts",
+          "symbol": "runBackup"
+        },
+        {
+          "file": "apps/desktop/electron/secret-store.cjs",
+          "symbol": "adoptDbKey"
+        }
+      ],
+      "tests": [
+        "packages/kernel/test/backup-restore.test.ts",
+        "apps/desktop/test/secret-store.test.ts",
+        "packages/kernel/test/backup-location.test.ts",
+        "packages/kernel/test/backup-purge.test.ts"
+      ],
+      "residual": "恢复包 + 恢复码 = 这台电脑的全部能力；创始设备的恢复包另含律所根与全部 5 份恢复份额（可签发管理员证书、解开全所托管的事项密钥——界面单独提示，C6 落地前的过渡）；恢复包不能作废、数据库主密钥暂不能轮换（再生成一份不会让旧的失效，界面写明；轮换在 G1，复核 R2A-01）；吊销设备后不再备份、不再生成恢复包，但已生成的恢复包与已有备份不受影响；恢复后与旧电脑同一设备身份（设备编号确定性，D-42）：控制面不能单独吊销旧电脑，吊销即同时停用恢复出的新电脑——旧电脑丢失或被偷时须由管理员重新办理入组（界面提示，复核 R2A-14）；删除事项后记“待清旧代”并立即再备份一次，成功后备份位置上只留新的一代——之前几代账本快照（含该事项的密钥包裹）与该事项的块随之删除；备份位置当时不可用的，下次备份成功时删除；换过备份位置的，旧位置上的备份不会被清理；备份位置若保留旧版本（网盘版本历史、NAS 快照），旧版本连同恢复包与恢复码仍可解开已删事项，须按律所保留期清理（删除回执写明）；备份只保留最近若干代，更早的副本由备份位置自身的版本历史决定",
+      "owner": "研发-内核"
+    },
+    {
+      "id": 29,
+      "data": "我方账号（第 44 批）：登录邮箱、姓名、角色、所属律所；密码（只在登录、注册、改密、找回的请求里）；账号会话令牌；本人的设备与登录列表（设备编号、客户端版本、最近报到日、登录时刻）",
+      "memory": "内核（密码只在调用期间，不落盘；会话令牌读入内存，附在控制面请求的 x-kwl-session 头里）；闸门（只转发）；渲染进程只拿到邮箱、姓名、角色与“是否已登录”，拿不到令牌",
+      "disk": "<工作区>/keys/account-session.json（kwl-sealed/1 封装：会话令牌、账号编号、邮箱、姓名、律所编号、角色、保存时刻；退出登录即删）；待激活时登录先暂存进目标工作区的 keys/，按新身份重启后照常读回",
+      "local_channels": "内核 ↔ 闸门（Node IPC，控制面通道）",
+      "network": "经出站闸门控制面通道（TLS 钉住）发往中软控制面：注册与登录时的邮箱、密码、姓名、律所名称、开通码 / 邀请码的控制面段、客户端版本与平台；控制面保存账号（邮箱、姓名、角色、所属律所、密码的 scrypt 摘要、失败计数与锁定时刻、个人上限与设备数上限）、会话（只存令牌的 SHA-256、绑定的设备编号、创建与最近使用时刻、到期时刻、客户端版本与平台）、一次性码（只存 HMAC）；运营控制台能看到账号的邮箱、姓名、状态、最近登录、设备与用量（逐请求的用量记录只有请求编号、模型、token 数与金额，不含请求内容与事项编号）",
+      "logs_dumps": "运行记录只记事件码（KERNEL_ACCOUNT_*、KERNEL_ONBOARDING_*），不记邮箱、密码与令牌；本机审计记登录、退出、改密、吊销登录、解绑设备（用户编号或设备编号）；控制面运营审计（律所可见流水）记注册、登录、退出、改密、重置、运营代建 / 停用 / 启用 / 发重置码 / 改上限（执行者为账号编号或运营编号，目标为账号编号，不记邮箱）",
+      "form": [
+        "kwl_sealed",
+        "tls_pinned",
+        "scrypt"
+      ],
+      "enforcement": [
+        {
+          "file": "packages/kernel/src/account-session.ts",
+          "symbol": "writeAccountSession"
+        },
+        {
+          "file": "packages/kernel/src/services/onboarding.ts",
+          "symbol": "OnboardingService"
+        },
+        {
+          "file": "packages/egress-gate/src/cp-relay.ts",
+          "symbol": "cpRelayAllowed"
+        },
+        {
+          "file": "services/control-plane/src/accounts.ts",
+          "symbol": "hashPassword"
+        }
+      ],
+      "tests": [
+        "services/control-plane/test/b44-accounts-routing-ledger.test.ts",
+        "services/control-plane/test/b44-ops-api.test.ts",
+        "packages/kernel/test/b44-account.test.ts"
+      ],
+      "residual": "密码经主进程 IPC 到内核再到闸门，进程内存里短暂存在（与开通码、恢复码同一口径）；会话令牌与设备私钥同一封装，拿到整机主密钥即可读出（与设备身份同一风险面）；没有邮件或短信通道时找回密码要找管理员或中软客服发重置码",
+      "owner": "研发-内核"
+    }
+  ],
+  "write_points": {
+    "apps/desktop/electron/main.cjs": {
+      "apis": [
+        "appendFileSync",
+        "writeFileSync"
+      ],
+      "rows": [
+        13,
+        17,
+        19
+      ],
+      "reason": "非内容索引版本标记与旧漫游数据提示标记（只写版本号或时间）；删除回执（不含案件内容）写到系统对话框选定的位置；冒烟形态（KWL_SMOKE=1）内核死亡时把内核输出环形缓冲（≤ 16 KB）追加到 CI 或 IT 指定的冒烟结果文件旁（<out>.kernel.log），从不写入用户数据根"
+    },
+    "apps/desktop/electron/secret-store.cjs": {
+      "apis": [
+        "copyFileSync",
+        "renameSync",
+        "writeFileSync"
+      ],
+      "rows": [
+        20,
+        28
+      ],
+      "reason": "数据库主密钥 DPAPI 包裹文件（原子写，解封失败不覆盖）；采用恢复的主密钥：新包裹先写 .next、原文件复制留档为 .prev-<时刻>、再原子替换"
+    },
+    "apps/desktop/electron/unreadable-data.cjs": {
+      "apis": [
+        "renameSync",
+        "writeFileSync"
+      ],
+      "rows": [
+        8,
+        20,
+        24
+      ],
+      "reason": "主密钥解封失败、律师选“用恢复包恢复”后（v9.3 主文 §9 第 7 项）：激活记录、入组与恢复中间记录、有账本的工作区、DPAPI 包裹的主密钥文件**改名**到 <数据根>/.unreadable-<时刻>/（不删除、不复制、跨卷即停）；另写一份不含案件信息的说明.txt"
+    },
+    "apps/desktop/electron/smoke-io.cjs": {
+      "apis": [
+        "writeFileSync"
+      ],
+      "rows": [
+        13
+      ],
+      "reason": "安装后冒烟结果（新文件、只含检查项与错误代码）"
+    },
+    "packages/file-broker/src/broker.ts": {
+      "apis": [
+        "link",
+        "open",
+        "rename"
+      ],
+      "rows": [
+        4,
+        5,
+        6
+      ],
+      "reason": "工作区、材料快照与引擎区的唯一写入通道（KWE1 严格形态）"
+    },
+    "packages/kap-host/src/main.ts": {
+      "apis": [
+        "writeFileSync"
+      ],
+      "rows": [
+        1,
+        5
+      ],
+      "reason": "材料快照（经区编解码器加密后写入）与宿主内检索入口占位文件（固定文字）"
+    },
+    "packages/kap-host/src/runtime.ts": {
+      "apis": [
+        "mkdtempSync"
+      ],
+      "rows": [
+        5
+      ],
+      "reason": "W 执行域设备自检的临时目录（自检后删除，不含案卷）"
+    },
+    "packages/kap-host/src/sealed-storage.ts": {
+      "apis": [
+        "open",
+        "rename",
+        "truncate"
+      ],
+      "rows": [
+        4,
+        6
+      ],
+      "reason": "引擎会话、事件日志与计划文件（KWE1）"
+    },
+    "packages/kernel/src/api/index.ts": {
+      "apis": [
+        "writeFileSync"
+      ],
+      "rows": [
+        17,
+        20
+      ],
+      "reason": "设备恢复包导出（scrypt 口令包裹）"
+    },
+    "packages/kernel/src/blobs.ts": {
+      "apis": [
+        "renameSync",
+        "writeFileSync"
+      ],
+      "rows": [
+        1,
+        7
+      ],
+      "reason": "案卷与成果块（块密文，临时文件 + 原子改名）"
+    },
+    "packages/kernel/src/config.ts": {
+      "apis": [
+        "writeFileSync"
+      ],
+      "rows": [
+        19
+      ],
+      "reason": "命名管道随机盐（0600）"
+    },
+    "packages/kernel/src/devices.ts": {
+      "apis": [
+        "renameSync",
+        "writeFileSync"
+      ],
+      "rows": [
+        17,
+        20
+      ],
+      "reason": "设备与律所密钥文件（kwl-sealed/1）、暂存的设备恢复"
+    },
+    "packages/kernel/src/services/content-updates.ts": {
+      "apis": [
+        "copyFileSync",
+        "renameSync",
+        "writeFileSync"
+      ],
+      "rows": [
+        19
+      ],
+      "reason": "在线内容更新（第 8 批 S6/S7）：经签名通道清单下载的法规库包与方法模板包（中软公开内容，非案卷）在 <工作区>/content/ 下暂存、核验、改名落位；增量包从在用的法规库复制可写副本后应用"
+    },
+    "packages/kernel/src/services/export-file.ts": {
+      "apis": [
+        "openSync",
+        "renameSync",
+        "writeSync"
+      ],
+      "rows": [
+        7,
+        13,
+        17,
+        28
+      ],
+      "reason": "导出直写：成果（还原真名）、诊断包与结案归档写到律师在主进程系统对话框里选定的位置（同目录临时文件 → fsync → 改名；不得写入数据根）"
+    },
+    "packages/kernel/src/services/share-relay.ts": {
+      "apis": [
+        "renameSync",
+        "writeFileSync"
+      ],
+      "rows": [
+        1,
+        23
+      ],
+      "reason": "中继收发件目录之间移动段文件；取回的材料块（密文）原子写进本机块存储"
+    },
+    "packages/kernel/src/skills-bundle.ts": {
+      "apis": [
+        "copyFileSync",
+        "renameSync"
+      ],
+      "rows": [
+        19
+      ],
+      "reason": "验签后物化签名方法模板（公开内容）"
+    },
+    "packages/kernel/src/sync-engine.ts": {
+      "apis": [
+        "copyFileSync"
+      ],
+      "rows": [
+        1
+      ],
+      "reason": "共享文件夹同步：块密文原样复制"
+    },
+    "packages/lawdb/src/index.ts": {
+      "apis": [
+        "writeFileSync"
+      ],
+      "rows": [
+        19
+      ],
+      "reason": "法规库增量清单（公开内容）"
+    },
+    "packages/safe-log/src/index.ts": {
+      "apis": [
+        "appendFileSync",
+        "writeFileSync"
+      ],
+      "rows": [
+        14
+      ],
+      "reason": "统一脱敏日志与本机 hash 盐"
+    },
+    "packages/sync/src/share-dir.ts": {
+      "apis": [
+        "renameSync",
+        "writeFileSync"
+      ],
+      "rows": [
+        1,
+        8,
+        23
+      ],
+      "reason": "共享文件夹的签名段与块（密文）；中继收发件目录的段文件（第 11 批）"
+    },
+    "packages/kernel/src/services/onboarding.ts": {
+      "apis": [
+        "renameSync",
+        "writeFileSync"
+      ],
+      "rows": [
+        24,
+        28
+      ],
+      "reason": "本机激活记录 activation.json、待生效激活记录 activation.pending.json、入组/恢复失败原因 onboarding-failed.json 与成员待批准状态 onboarding.json（只有编号、显示名、状态与原因代码；临时文件改名原子写）；秘密一律经 devices.ts 的封装写入"
+    },
+    "packages/kernel/src/services/backup.ts": {
+      "apis": [
+        "copyFile",
+        "rename",
+        "renameSync",
+        "writeFile",
+        "writeFileSync"
+      ],
+      "rows": [
+        28
+      ],
+      "reason": "备份位置里的内容寻址对象（全是密文）与加密签名清单；从备份恢复时写进数据根下的暂存目录再整体改名；本机备份状态与摘要索引（只有位置、序号、时刻、错误代码与相对路径摘要）"
+    }
+  },
+  "renderer_storage": {
+    "apis": [
+      "localStorage"
+    ],
+    "keys": {
+      "kwl.home.line": "首页能力胶囊分组偏好（推荐/诉讼/非诉/企业法务/通用；第 47 批加“推荐”）；执行页“接着做”按它挑同一业务线的场景卡（只读，推荐与通用时不按业务线挑）",
+      "kwl.update.later": "更新横幅“稍后”记住的版本号",
+      "kwl.update.rejected-seen": "已知道未通过核验的版本号",
+      "kwl.ui.theme": "设置 → 通用 → 外观（浅色/深色；跟随系统时不存）",
+      "kwl.ui.zoom": "设置 → 通用 → 字号（标准/大/特大）",
+      "kwl.setAside.dismissed": "激活页：律师在“从备份恢复”点过“返回”的那个移到一边的目录名（.unreadable-<时刻>，只有时刻、不含身份或案件信息；复核 RB16B-20）",
+      "kwl.recovery.snooze_until": "首页与事项页的备份提醒点了“明天提醒”：记到哪一天（本地日期 YYYY-MM-DD）之前不显示；只对橙色提醒生效，备份失败、备份盘不对等红色提醒不能推迟；不含身份或案件信息（v9.4）",
+      "kwl.sidebar.collapsed": "侧栏是否收起（\"1\" / \"0\"）；不含身份或案件信息（第 45 批，对齐 Kimi 首页）",
+      "kwl.guide.v1.<8 位摘要>": "首次上手指南看过了（值为 \"1\"）；键尾是律所与成员标识的 FNV-1a 摘要，只用于同一台电脑上换人时各看各的，不写标识原文、不含案件信息（第 45 批；经 lib/guide-steps.ts 的读写函数，键由 guideSeenKey 生成）",
+      "kwl.checklist.v1.<8 位摘要>": "上手清单的显示状态（值为 \"shown\" 或 \"hidden\"）；键尾同上（律所与成员标识的 FNV-1a 摘要），不写标识原文、不含案件信息；完成与否由内核按本机真实数据判定、不存这里（第 46 批；经 lib/guide-checklist.ts 的读写函数）",
+      "kwl.sidebar.sections": "侧栏“事项”“任务”分组是否展开（第 47 批）",
+      "kwl.home.quota-dismissed": "首页额度提示条关掉时的周期与情形键（如 2026-11:firm-low，不含任何用量数；第 47 批）",
+      "kwl.chat.model": "问答上次选的模型别名（legal/k3 或 legal/k2.6；第 47 批）",
+      "kwl.chat.deep": "问答“深度思考”开关上次的选择（1 / 0；第 48 批；不含问答内容）"
+    },
+    "files": [
+      "apps/desktop/src/App.tsx",
+      "apps/desktop/src/components/Sidebar.tsx",
+      "apps/desktop/src/pages/Home.tsx",
+      "apps/desktop/src/lib/ui-prefs.ts",
+      "apps/desktop/src/pages/RunView.tsx",
+      "apps/desktop/src/pages/Activate.tsx",
+      "apps/desktop/src/pages/Chat.tsx"
+    ]
+  },
+  "out_of_scope": {
+    "apps/firm-node/": "所内节点（无界面服务，律所服务器上的存储与日志另行规定）",
+    "packages/im-connectors/": "所内节点 IM 连接器",
+    "packages/ops-auth/": "中软云端运营按人鉴权（v9.3 A-10；只在云端服务与运营命令行里用，律师电脑上的内核、闸门与客户端都不引用——ops-auth.test.ts 门禁）：写的是云端的运营名册版本记录、名册换版记录与运营请求随机数（只供用例与开发的 testing.ts 另写一份名册副本），不含律所数据",
+    "packages/blob-store/": "中软云端对象存储接口（v9.3 A-11；本地目录或 S3 兼容对象存储）：只在云端服务里用，律师电脑上的内核、闸门与客户端都不引用（blob-store.test.ts 门禁）；存的是支持服务的诊断包本体（第 13 类、“数据去向说明”）与签名服务的签名账外送（只有种类、租户、密钥编号与摘要，不含文档内容；开版本控制与对象锁的单独桶），都不含案件内容",
+    "services/": "中软云端服务（Y2 第 6 章：只计量不留案件内容）；例外：支持服务（services/support-api）保存律师逐次确认上传的脱敏诊断包 7 天（不含案件内容，内容见第 13 类与“数据去向说明”）",
+    "packages/kap-host/vendor/": "Kimi Code 引擎制品（kap-embed.mjs）：引擎的持久化经宿主注入的种子（SealedFileStorageService、事件日志 JournalIo、broker）改写为 KWE1 密文；制品内直接文件写入由 static-surface.test.ts 按输入文件另行锁定，不在本扫描内"
+  },
+  "scan_limits": "写盘面扫描只认绑定到 node:fs / node:fs/promises / original-fs 的写接口（含别名导入、命名空间、require 解构）；经包装函数间接调用、动态 import 与第三方库内部的写入不在扫描范围，由代码评审与金丝雀用例补位"
+}

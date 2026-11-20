@@ -1,0 +1,905 @@
+/**
+ * 修订写入：在 word/document.xml 上按锚点做定点字符串手术，写原生 w:del/w:ins 与批注。
+ * 安全语义（§5.4/§6.2）：
+ * - 每次写回绑定基线 hash 与原文 hash；不匹配即整体停止（原子，不写半个文件）；
+ * - 锚点歧义（多处匹配且无提示）拒绝自动写入；
+ * - 删除文本进 w:delText、新增进 w:ins，作者与日期如实标记（AI 建议 ≠ 律师批准）。
+ */
+import { dropHouseMark } from "./house-style.ts";
+import { DomainError, sha256Hex } from "@zr-legal/domain";
+import { readZipEntries, writeZip } from "./zip.ts";
+import { childElements, enclosingElement, escapeXml, findElement, findInParagraph, mapParagraph, mapParagraphs, paragraphCells, removeElements, splitParagraphRuns, type ParagraphMap, type TextSegment } from "./textmap.ts";
+import { paragraphListLabels } from "./numbering.ts";
+import type { AppliedRevision, RevisionOp, RevisionPlan } from "./revision-ops.ts";
+
+const W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+
+export interface ApplyResult {
+  docx: Buffer;
+  applied: AppliedRevision[];
+}
+
+export function applyRevisionsToDocx(docx: Buffer, plan: RevisionPlan): ApplyResult {
+  const baseline = sha256Hex(docx);
+  if (baseline !== plan.baselineHash) {
+    throw new DomainError("stale_baseline", "基线 hash 不符：文档已变化，停止写入（不静默覆盖）", 412, {
+      expected: plan.baselineHash,
+      actual: baseline,
+    });
+  }
+  const files = readZipEntries(docx);
+  const documentXml = files.get("word/document.xml")?.toString("utf8");
+  if (documentXml === undefined) throw new DomainError("unsupported_file", "DOCX 缺少 word/document.xml", 422);
+
+  let xml = documentXml;
+  const comments: { id: number; author: string; date: string; text: string }[] = [];
+  // 修订与批注的 id 在整份文件里取号（第 34 批 D15：原先只看 document.xml，和已有批注、脚注里的修订撞号）
+  let idSeq = nextIdSeed([...files.entries()].filter(([n]) => /^word\/[^/]+\.xml$/.test(n)).map(([, d]) => d.toString("utf8")).join(""));
+  const applied: AppliedRevision[] = [];
+  // 自动编号（第 29 批）：条款提示（“3.2”“第五条”）也按 Word 显示的编号比对；按原件段落次序算一次（新插入的段落不参与匹配，次序不变）
+  const labels = paragraphListLabels(documentXml, files.get("word/numbering.xml")?.toString("utf8") ?? null, files.get("word/styles.xml")?.toString("utf8") ?? null);
+  // 条款提示一律按原件比对（V16 第 41 批真实走查：同一批里先把付款表的行名“尾款”改成“质保金”，后面按“尾款｜比例”定位同一行的格子就对不上，整批失败）
+  const original = hintContext(documentXml, labels);
+
+  for (const op of plan.ops) {
+    if (op.anchor.part === "header" || op.anchor.part === "footer") applyToHeaderFooter(files, op, () => idSeq++, applied);
+    else xml = applyOne(xml, op, comments, () => idSeq++, applied, labels, original);
+  }
+  // 段后插入用的临时标记（同一段后的多条插入按先后接在一起；插入的新段落不参与后续锚点匹配）写完即去掉
+  // 接着对方插入时重开的标签后面没有字的，整个去掉（不留空的对方插入）
+  xml = xml.replace(/<w:ins\b[^>]*\skwl-reopen="1"[^>]*><\/w:ins>/g, "");
+  xml = xml.replace(/ kwl-(?:anchor|ins|new|reopen)="\d+"/g, "");
+  // 结构自检（第 34 批，文档工程压测 D01～D05）：写坏了就整体停止、原件不动，不交一份打不开的文件
+  assertWellFormed(xml, "word/document.xml");
+
+  if (comments.length > 0) {
+    ensureCommentsInfrastructure(files);
+    const existing = files.get("word/comments.xml")?.toString("utf8");
+    const body = comments
+      .map(
+        (c) =>
+          `<w:comment w:id="${c.id}" w:author="${escapeXml(c.author)}" w:date="${c.date}" w:initials="AI"><w:p><w:r><w:t xml:space="preserve">${escapeXml(c.text)}</w:t></w:r></w:p></w:comment>`,
+      )
+      .join("");
+    const next = existing
+      ? existing.replace(/<\/w:comments>/, `${body}</w:comments>`)
+      : `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:comments xmlns:w="${W_NS}">${body}</w:comments>`;
+    assertWellFormed(next, "word/comments.xml");
+    files.set("word/comments.xml", Buffer.from(next, "utf8"));
+  }
+
+  files.set("word/document.xml", Buffer.from(xml, "utf8"));
+  // 修订稿打开“修订”开关（第 35 批 R5 律师评分：律师在修订稿上接着改时容易不留痕）；原件没有设置部件的不新建
+  const settings = files.get("word/settings.xml")?.toString("utf8");
+  if (settings !== undefined && !/<w:trackRevisions\b/.test(settings)) {
+    const next = settings.replace(/(<w:settings\b[^>]*>)/, "$1<w:trackRevisions/>");
+    if (next !== settings) {
+      assertWellFormed(next, "word/settings.xml");
+      files.set("word/settings.xml", Buffer.from(next, "utf8"));
+    }
+  }
+  dropHouseMark(files);
+  const out = writeZip([...files.entries()].map(([name, data]) => ({ name, data })));
+  return { docx: out, applied };
+}
+
+/**
+ * 页眉页脚里的修订（V10 第 36 批：V9.6 真实走查 R5 与 V10 走查 V2——律师要求“全文（含页眉）”统一改正乙方名称，原先工具只改正文、
+ * 页眉里的错名只能请律师手工改）。在每个含锚点的同类部件（首页、奇偶页、默认页眉各是一个部件）里各写一处原生修订；
+ * 定位口径与正文相同（部件内多段命中且无提示即拒写）；一个部件都没有命中即报“未找到”。Word 不支持在页眉页脚里挂批注，批注不写。
+ */
+function applyToHeaderFooter(files: Map<string, Buffer>, op: RevisionOp, nextId: () => number, applied: AppliedRevision[]): void {
+  const kind = op.anchor.part as "header" | "footer";
+  const names = [...files.keys()].filter((n) => new RegExp(`^word/${kind}\\d*\\.xml$`).test(n)).sort();
+  const hit: string[] = [];
+  for (const name of names) {
+    const partXml = files.get(name)!.toString("utf8");
+    if (!mapParagraphs(partXml).some((p) => findInParagraph(p, op.anchor.originalText, op.anchor.occurrence ?? 0) !== null)) continue;
+    const local: AppliedRevision[] = [];
+    let next = applyOne(partXml, { ...op, comment: undefined, insertAfter: undefined }, [], nextId, local, []);
+    next = next.replace(/<w:ins\b[^>]*\skwl-reopen="1"[^>]*><\/w:ins>/g, "").replace(/ kwl-(?:anchor|ins|new|reopen)="\d+"/g, "");
+    assertWellFormed(next, name);
+    files.set(name, Buffer.from(next, "utf8"));
+    hit.push(name);
+  }
+  if (hit.length === 0) {
+    throw new DomainError("anchor_mismatch", `修订 ${op.opId} 锚点未找到（${kind === "header" ? "页眉" : "页脚"}里没有这段原文），转人工`, 422, { opId: op.opId, anchor: op.anchor.originalText.slice(0, 60) });
+  }
+  applied.push({ opId: op.opId, status: "applied", paragraphIndex: -1, part: kind, partNames: hit });
+}
+
+/** 页眉、页脚各部件的段落文字（V10 第 36 批：给助手看，好照抄锚点）；空段略去。 */
+export function headerFooterParagraphs(docx: Buffer): { part: "header" | "footer"; name: string; texts: string[] }[] {
+  const out: { part: "header" | "footer"; name: string; texts: string[] }[] = [];
+  for (const [name, data] of [...readZipEntries(docx).entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const m = /^word\/(header|footer)\d*\.xml$/.exec(name);
+    if (!m) continue;
+    const texts = mapParagraphs(data.toString("utf8")).map((p) => p.text).filter((t) => t.trim());
+    if (texts.length > 0) out.push({ part: m[1] as "header" | "footer", name, texts });
+  }
+  return out;
+}
+
+/** 条款提示比对用的段落信息：编号、文字、所在表格行的整行文字、列名、表前那段。 */
+type HintFacts = { label: string | null; text: string; row: string; col: string; lead: string };
+
+/**
+ * 按某一版文字（正文写入时取原件）算每段的条款提示信息，段落序号与 mapParagraphs 一致。
+ * 提示（“3.2｜尾款｜比例”）是助手照原件写的：同一批里前面的修改改了行名、列名或表前那段，后面的修改照样按原件的写法认（V16 第 41 批）。
+ */
+function hintContext(xml: string, labels: readonly (string | null)[]): (i: number) => HintFacts | null {
+  const all = mapParagraphs(xml);
+  let cells: ReturnType<typeof paragraphCells> | null = null;
+  return (i) => {
+    const p = all[i];
+    if (!p) return null;
+    cells ??= paragraphCells(xml);
+    const c = cells[i];
+    // 表格里的格子按所在行认提示（“首期”那一行的“无”）：材料视图里表格按行写成“| 首期 | 无 |”
+    const row = c ? all.filter((q) => cells![q.index]?.table === c.table && cells![q.index]?.row === c.row).map((q) => q.text).join(" | ") : "";
+    // 表前那段（第 35 批 R5）：条款号与文字，两张表行名列名相同时靠它区分（“2.1｜合计｜金额（元）”）
+    const lp = c && c.lead !== null ? all[c.lead] : undefined;
+    // 列名：该列首行的文字（同一行里两格金额相同，如“应还利息”与“本期合计”都是 75,000.00，靠列名区分；第 34 批 T3 真实走查）
+    return { label: labels[i] ?? null, text: p.text, row, col: c?.header ?? "", lead: lp ? `${labels[c!.lead!] ?? ""} ${lp.text}` : "" };
+  };
+}
+
+function applyOne(
+  xml: string,
+  op: RevisionOp,
+  comments: { id: number; author: string; date: string; text: string }[],
+  nextId: () => number,
+  applied: AppliedRevision[],
+  labels: readonly (string | null)[] = [],
+  original?: (i: number) => HintFacts | null,
+): string {
+  if (sha256Hex(op.anchor.originalText) !== op.originalHash) {
+    throw new DomainError("anchor_mismatch", `修订 ${op.opId} 原文 hash 校验失败`, 422, { opId: op.opId });
+  }
+  // 本次写入里新插入的段落不算候选（复核 Q2-06：补充条款里恰好含后面某张卡的锚点时不会多出一处匹配）
+  const all = mapParagraphs(xml);
+  const paras = all.filter((p) => !/^<w:p\b[^>]*\skwl-ins="/.test(xml.slice(p.xmlStart, p.xmlStart + 200)));
+  // 原件段落序号（去掉本次新插入的段落后的次序，与自动编号 labels 对齐）
+  const origIndex = new Map(paras.map((p, i) => [p, i]));
+  const candidates = paras.filter((p) => findInParagraph(p, op.anchor.originalText, op.anchor.occurrence ?? 0) !== null);
+  let target = candidates[0];
+  if (candidates.length > 1) {
+    // 多处匹配：没有条款提示、或提示对不上 / 仍有多处时都按歧义拒写（第 34 批 D10：原先提示对不上时静默改第一处）
+    // 提示按原件的编号、行名、列名与表前那段比对（origIndex 是原件段落序号；页眉页脚各部件没有传入原件时按本部件现有文字）
+    const facts = original ?? hintContext(xml, labels);
+    const picked = op.anchor.paragraphHint ? pickByHint(candidates.map((p) => facts(origIndex.get(p)!) ?? { label: null, text: p.text, row: "", col: "", lead: "" }), op.anchor.paragraphHint) : null;
+    if (picked === null) {
+      throw new DomainError(
+        "anchor_mismatch",
+        op.anchor.paragraphHint
+          ? `修订 ${op.opId} 锚点歧义（${candidates.length} 处匹配），条款提示“${op.anchor.paragraphHint.slice(0, 20)}”对不上其中唯一一处，需改提示或转人工`
+          : `修订 ${op.opId} 锚点歧义（${candidates.length} 处匹配），需 paragraphHint 或转人工`,
+        422,
+        { opId: op.opId },
+      );
+    }
+    target = candidates[picked];
+  }
+  if (!target) {
+    throw new DomainError("anchor_mismatch", `修订 ${op.opId} 锚点未找到（原文不存在或已被修改），转人工`, 422, {
+      opId: op.opId,
+      anchor: op.anchor.originalText.slice(0, 60),
+    });
+  }
+  const paragraphIndex = origIndex.get(target)!;
+  if (op.insertRowAfter) return insertRowAfter(xml, target, op, comments, nextId, applied, paragraphIndex);
+  if (op.deleteRow) return deleteRow(xml, target, op, comments, nextId, applied, paragraphIndex);
+  if (op.insertAfter && op.afterTable) {
+    // 表后插入（V16 第 41 批）：锚点在表里的，取最外层那张表、格式取表前最近一段有字的正文；锚点是表前那一段的，它后面必须紧跟表格
+    let tbl = enclosingElement(xml, "tbl", target.xmlStart, "outer");
+    let fmt = target;
+    if (tbl) {
+      const lead = paras.findLast((p) => p.xmlEnd <= tbl!.start && p.text.trim() !== "" && !enclosingElement(xml, "tbl", p.xmlStart, "outer"));
+      if (!lead) throw new DomainError("anchor_mismatch", `修订 ${op.opId} 表格前面没有正文段落可以沿用格式：改用表格之后那一段作锚点，在它之前或之后另行处理，或转人工`, 422, { opId: op.opId });
+      fmt = lead;
+    } else {
+      const m = /^(?:\s|<w:bookmark(?:Start|End)\b[^>]*\/>|<w:p\b[^>]*\skwl-ins="[^>]*>[\s\S]*?<\/w:p>)*<w:tbl\b/.exec(xml.slice(target.xmlEnd));
+      tbl = m ? enclosingElement(xml, "tbl", target.xmlEnd + m[0].length, "outer") : null;
+      if (!tbl) throw new DomainError("anchor_mismatch", `修订 ${op.opId} 锚点所在段落后面不是表格：要插在表格之后的，锚点写表格前面紧挨着的那一段、或表格里任一格的原文；不是插在表格之后的，去掉 insert_after_table`, 422, { opId: op.opId });
+    }
+    const fmtIndex = origIndex.get(fmt) ?? paragraphIndex;
+    const heading = articleHeadingFor(paras, labels, fmtIndex, op.newText);
+    const tableNo = (xml.slice(0, tbl.start).match(/<w:tbl\b/g) ?? []).length + 1;
+    return insertParagraphsAfter(xml, fmt, op, comments, nextId, applied, paragraphIndex, heading && { para: heading, labeled: !!labels[origIndex.get(heading) ?? -1] }, { at: tbl.end, key: String(900000 + tableNo), formatParagraphIndex: fmtIndex });
+  }
+  if (op.insertAfter) {
+    const heading = articleHeadingFor(paras, labels, paragraphIndex, op.newText);
+    return insertParagraphsAfter(xml, target, op, comments, nextId, applied, paragraphIndex, heading && { para: heading, labeled: !!labels[origIndex.get(heading) ?? -1] });
+  }
+  // 一个 run 里有几段文字、制表符、换行的（Word 常这样写签署栏、地址栏），先按内容拆成一段一个 run 再切（第 34 批 D07：
+  // 原先只认第一段文字，改前半段会把后半段静默删掉）；只拆要改的这一段，其余段落字节不动
+  const lenBefore = xml.length;
+  xml = splitParagraphRuns(xml, target, nextId);
+  target = mapParagraph(xml.slice(target.xmlStart, target.xmlEnd + xml.length - lenBefore), target.xmlStart, target.index);
+  const span = findInParagraph(target, op.anchor.originalText, op.anchor.occurrence ?? 0)!;
+  const coverSegs = target.segments.filter((s) => !s.deleted && !s.fresh && s.end > span.start && s.start < span.end);
+  if (coverSegs.length === 0) {
+    throw new DomainError("anchor_mismatch", `修订 ${op.opId} 锚点落在非文本区`, 422, { opId: op.opId });
+  }
+  // 只标出真正改动的字（第 28 批）：锚点与新文本相同的开头、结尾照原样保留，中间一段删、一段插。
+  // 第 34 批 D08：每个原 run 按自己的格式重发（原先没改的字一律套第一个 run 的格式，下划线、楷体、字号会丢）
+  // 逐处改动（V16 第 41 批）：锚点与新文本之间有几处互不相连的不同时，分成几处各自删、各自插，每处的新字沿用它那一处的格式。
+  // 真实走查 D1：5.1 款只改三个数字，整段作锚点提交后，从第一个不同到最后一个不同之间的字全部显示成删除又新增，
+  // 新字一律套用第一处（加粗的金额）的格式——加粗范围扩到了大半段，对方也看不出其实只改了三个数。
+  const hunks = changeHunks(op.anchor.originalText, op.newText).map((h) => ({ d0: span.start + h.a0, d1: span.start + h.a1, added: h.added }));
+  const r0 = hunks[0]!.d0;
+  const r1 = hunks.at(-1)!.d1;
+  // 只重写改动所在的 run，锚点里没变的开头、结尾所在的 run 字节不动：锚点可以跨过对方修订的边界，只要改动本身不跨
+  // （第 34 批 T3b 真实走查：“一般保证”里“一般”是对方插入、“保证”是原文，改回“连带责任保证”原先因锚点跨边界被拒写）
+  const touched = r1 > r0 ? coverSegs.filter((s) => s.end > r0 && s.start < r1) : [coverSegs.findLast((s) => s.start < r0) ?? coverSegs[0]!];
+  const first = touched[0] ?? coverSegs[0]!;
+  const last = touched.at(-1) ?? first;
+  const date = new Date().toISOString();
+  const author = op.author;
+  const paraXml = xml.slice(target.xmlStart, target.xmlEnd);
+  const relStart = first.runXmlStart - target.xmlStart;
+  const relEnd = last.runXmlEnd - target.xmlStart;
+  const region = paraXml.slice(relStart, relEnd);
+  const { preserved, foreignIns } = checkRegion(op.opId, paraXml, relStart, region);
+  // 整段落在对方的一处插入之内时按一处改动处理（插入要先收起对方的插入再重开，分成几处会把对方的插入切碎）
+  const plan = foreignIns && hunks.length > 1 ? [{ d0: r0, d1: r1, added: op.newText.slice(hunks[0]!.d0 - span.start, op.newText.length - (span.end - r1)) }] : hunks;
+
+  type Atom = { kind: "keep" | "del"; seg: TextSegment; text: string; at: number; hunk: number };
+  const atoms: Atom[] = [];
+  for (const seg of target.segments) {
+    if (seg.runXmlStart < first.runXmlStart || seg.runXmlEnd > last.runXmlEnd || seg.deleted || seg.fresh) continue;
+    let pos = seg.start;
+    const cut = (to: number, kind: Atom["kind"], hunk: number) => {
+      const b2 = Math.min(seg.end, to);
+      if (b2 > pos) atoms.push({ kind, seg, text: seg.text.slice(pos - seg.start, b2 - seg.start), at: pos, hunk });
+      pos = Math.max(pos, b2);
+    };
+    plan.forEach((h, k) => {
+      cut(h.d0, "keep", -1);
+      cut(h.d1, "del", k);
+    });
+    cut(seg.end, "keep", -1);
+  }
+  const changed = plan.some((h) => h.d1 > h.d0 || h.added.length > 0);
+  // 每处改动：新字接在该处删除的字之后；格式取该处删除开始的那个 run 的（纯插入取前一个字的）
+  const points = plan.map((h, k) => {
+    const firstDel = atoms.findIndex((x) => x.kind === "del" && x.hunk === k);
+    const insPos = firstDel >= 0 ? atoms.findLastIndex((x) => x.kind === "del" && x.hunk === k) + 1 : (() => { const i = atoms.findIndex((x) => x.at >= h.d0); return i < 0 ? atoms.length : i; })();
+    const rPr = cleanRpr((firstDel >= 0 ? atoms[firstDel]! : (atoms[Math.max(0, insPos - 1)] ?? atoms[0]!)).seg.rPr);
+    return { firstDel, insPos, rPr, added: h.added, start: firstDel >= 0 ? firstDel : insPos };
+  });
+  let commentId = -1;
+  if (op.comment) {
+    commentId = nextId();
+    comments.push({ id: commentId, author, date, text: op.comment });
+  }
+  const parts: string[] = [];
+  let delOpen = false;
+  const closeDel = () => {
+    if (delOpen) parts.push("</w:del>");
+    delOpen = false;
+  };
+  const changeStart = Math.min(...points.map((x) => x.start));
+  const lastPoint = points.at(-1)!;
+  let commentClosed = false;
+  const closeComment = () => {
+    if (commentId >= 0 && !commentClosed) parts.push(commentEnd(commentId));
+    commentClosed = true;
+  };
+  for (let i = 0; i <= atoms.length; i++) {
+    if (i === changeStart && commentId >= 0 && changed) parts.push(`<w:commentRangeStart w:id="${commentId}"/>`);
+    for (const pt of points) {
+      if (i !== pt.insPos || !pt.added) continue;
+      closeDel();
+      const ours = `<w:ins w:id="${nextId()}" w:author="${escapeXml(author)}" w:date="${date}" kwl-new="1"><w:r>${pt.rPr}${runContent(pt.added)}</w:r></w:ins>`;
+      // 在对方的插入里：先收起对方的插入，我方插入放在外面，再用新编号接着对方的插入（ins 里不能再套 ins）
+      parts.push(foreignIns ? `</w:ins>${ours}${foreignIns.replace(/\bw:id="\d+"/, `w:id="${nextId()}"`).replace(/>$/, ' kwl-reopen="1">')}` : ours);
+      if (pt === lastPoint) closeComment();
+    }
+    const x = atoms[i];
+    if (!x) break;
+    // 原有的字（保留的、删除的）照原格式重发，连同对方的格式修订记录（换新编号，切开的几段不重号）；新插入的字才去掉
+    const rpr = freshChangeIds(x.seg.rPr ?? "", nextId);
+    const body = x.seg.kind === "text" ? `<w:${x.kind === "del" ? "delText" : "t"} xml:space="preserve">${escapeXml(x.text)}</w:${x.kind === "del" ? "delText" : "t"}>` : xml.slice(x.seg.xmlStart, x.seg.xmlEnd);
+    if (x.kind === "del") {
+      if (!delOpen) parts.push(`<w:del w:id="${nextId()}" w:author="${escapeXml(author)}" w:date="${date}" kwl-new="1">`);
+      delOpen = true;
+      parts.push(`<w:r>${rpr}${body}</w:r>`);
+      const next = atoms[i + 1];
+      if (!next || next.kind !== "del" || next.hunk !== x.hunk) {
+        closeDel();
+        if (x.hunk === plan.length - 1 && !lastPoint.added) closeComment();
+      }
+    } else parts.push(`<w:r>${rpr}${body}</w:r>`);
+  }
+  closeDel();
+  if (!changed && commentId >= 0) parts.push(`<w:commentRangeStart w:id="${commentId}"/>${commentEnd(commentId)}`);
+  else if (changed) closeComment();
+  // 切除范围里原有的书签、批注范围等标记照原样放回（第 34 批 D06：原先随 run 一起被静默删掉）
+  parts.push(...preserved);
+
+  let newParaXml = paraXml.slice(0, relStart) + parts.join("") + paraXml.slice(relEnd);
+  // 整段删除（第 31 批）：段落的可见文字全部删掉时，段落标记也标为删除——接受修订后整段消失（清洁稿同一处理，见 sanitize），
+  // 不留空行；自动编号的条款不再剩一个空的“5.3”、后面的编号也随之顺延。分节符所在的段落不动段落标记（会并掉分节）。
+  const remaining = target.text.slice(0, span.start) + target.text.slice(span.end);
+  if (!op.newText && remaining.trim() === "") newParaXml = markParagraphDeleted(newParaXml, nextId(), escapeXml(author), date);
+  applied.push({ opId: op.opId, status: "applied", paragraphIndex });
+  return xml.slice(0, target.xmlStart) + newParaXml + xml.slice(target.xmlEnd);
+}
+
+function commentEnd(id: number): string {
+  return `<w:commentRangeEnd w:id="${id}"/><w:r><w:rPr><w:rStyle w:val="CommentReference"/></w:rPr><w:commentReference w:id="${id}"/></w:r>`;
+}
+
+/** 纯插入（没有删除的字）时新字的位置：第一个起点不早于插入点的保留片段之前。 */
+function insertionIndex(atoms: readonly { seg: TextSegment; text: string }[], r0: number, base: number): number {
+  let pos = base;
+  for (let i = 0; i < atoms.length; i++) {
+    if (pos >= r0) return i;
+    pos += atoms[i]!.text.length;
+  }
+  return atoms.length;
+}
+
+/** 复制的格式里的格式修订记录（w:rPrChange）换新编号：同一记录写进几个 run 时编号不重复。 */
+function freshChangeIds(rPr: string, nextId: () => number): string {
+  return rPr.replace(/(<w:rPrChange\b[^>]*?\bw:id=")\d+(")/g, (_m, a: string, b: string) => `${a}${nextId()}${b}`);
+}
+
+/** 新 run 用的格式：去掉他人的格式修订记录（w:rPrChange），不把对方的修订复制到本次的修改上（第 34 批 D03）。 */
+function cleanRpr(rPr: string | null): string {
+  return rPr ? removeElements(rPr, ["w:rPrChange"]) : "";
+}
+
+/** 新文字写成 run 内容：换行写成 w:br、制表符写成 w:tab（第 34 批 D19：原先写成 w:t 里的字面换行，Word 里不分行）。 */
+function runContent(text: string): string {
+  return text
+    .split(/(\r?\n|\t)/)
+    .map((piece) => (piece === "\t" ? "<w:tab/>" : /^\r?\n$/.test(piece) ? "<w:br/>" : piece ? `<w:t xml:space="preserve">${escapeXml(piece)}</w:t>` : ""))
+    .join("");
+}
+
+/** 切除范围里可以照原样放回的标记（书签、批注范围、权限范围）；拼写标记直接去掉。 */
+const MARKERS = new Set(["w:bookmarkStart", "w:bookmarkEnd", "w:commentRangeStart", "w:commentRangeEnd", "w:permStart", "w:permEnd"]);
+/** run 里可以当文字处理的内容；lastRenderedPageBreak 只是排版缓存，可以去掉。 */
+const RUN_TEXT_CHILDREN = new Set(["w:rPr", "w:t", "w:tab", "w:ptab", "w:br", "w:cr", "w:lastRenderedPageBreak"]);
+/** 不能切开的容器：他人修订、超链接、内容控件、智能标记、简单域等（第 34 批 D01、D09、D13、D17）。 */
+const CONTAINERS = /<(\/?)w:(ins|del|moveFrom|moveTo|hyperlink|sdt|sdtContent|smartTag|customXml|fldSimple|txbxContent)\b([^>]*?)(\/?)>/g;
+
+/**
+ * 切除范围的检查：范围必须只由 run 和可放回的标记组成；不能落在他人修订或域里、不能跨过容器的边界；run 里不能有脚注引用、
+ * 域代码、图片等（切掉就丢了）。不成立时拒写并说明改法。返回要放回的标记。
+ */
+function checkRegion(opId: string, paraXml: string, relStart: number, region: string): { preserved: string[]; foreignIns: string | null } {
+  const refuse = (why: string): never => {
+    throw new DomainError("anchor_mismatch", `修订 ${opId} ${why}`, 422, { opId });
+  };
+  // 起点所在的容器
+  const stack: { name: string; fresh: boolean; tag: string }[] = [];
+  CONTAINERS.lastIndex = 0;
+  for (const m of paraXml.matchAll(CONTAINERS)) {
+    if (m.index! >= relStart) break;
+    if (m[4] === "/") continue;
+    if (m[1]) stack.pop();
+    else stack.push({ name: m[2]!, fresh: /\skwl-new="/.test(m[3] ?? ""), tag: m[0] });
+  }
+  // 整段落在对方的一处插入之内（对方加的字我方再改，如“不接受对方把连带责任保证改成一般保证”）：照 Word 的写法，
+  // 删除嵌在对方的插入里、我方插入放在对方插入之外——接受全部得到我方文字，拒绝全部回到原件（第 34 批，T3 第 6 条意见）
+  let foreignIns: string | null = null;
+  for (const c of stack) {
+    if (c.fresh) refuse("与本次另一处修改落在同一处：合并成一条修改");
+    if (c.name === "ins" && !foreignIns && stack.filter((x) => x.name === "ins").length === 1) {
+      foreignIns = c.tag;
+      continue;
+    }
+    if (c.name === "ins" || c.name === "del" || c.name === "moveFrom" || c.name === "moveTo") refuse("锚点在原件已有的修订痕迹里（对方的插入或删除）：自动改写会打乱对方的修订记录，请先在 Word 里接受或拒绝对方的修订，或手工修改这一处");
+    if (c.name === "fldSimple") refuse("锚点在 Word 域（自动日期、页码、交叉引用等）的结果里：域更新后修改会失效，请手工修改");
+  }
+  for (const m of region.matchAll(CONTAINERS)) {
+    if (m[4] === "/") continue;
+    if (/\skwl-new="/.test(m[3] ?? "")) refuse("与本次另一处修改落在同一处：合并成一条修改");
+    if (m[2] === "ins" || m[2] === "del" || m[2] === "moveFrom" || m[2] === "moveTo") refuse("要改的文字跨过了原件已有的修订痕迹（对方的插入或删除）：按边界拆成两条修改（对方插入里的字一条、外面的字一条），或先在 Word 里处理对方的修订");
+    refuse("要改的文字跨过了超链接、内容控件或域的边界：按边界拆成两条修改，每条只改其中一侧的纯文字");
+  }
+  const preserved: string[] = [];
+  for (const c of childElements(region)) {
+    const el = region.slice(c.start, c.end);
+    if (c.name === "w:r") {
+      const open = /^<w:r\b[^>]*>/.exec(el)?.[0];
+      if (!open || el.endsWith("/>")) continue;
+      const kids = childElements(el.slice(open.length, el.length - "</w:r>".length));
+      if (kids.some((k) => k.name === "w:commentReference")) {
+        preserved.push(el);
+        continue;
+      }
+      if (kids.some((k) => !RUN_TEXT_CHILDREN.has(k.name))) refuse("锚点范围里有脚注引用、域代码、图片或特殊符号：切开会丢失，把锚点缩小到纯文字部分，或手工修改");
+      continue;
+    }
+    if (MARKERS.has(c.name)) preserved.push(el);
+    else if (c.name !== "w:proofErr") refuse("锚点范围里有无法自动改写的内容（如公式或嵌入对象）：把锚点缩小到纯文字部分，或手工修改");
+  }
+  return { preserved, foreignIns };
+}
+
+/**
+ * 条款提示定位（第 34 批 D10）：多处匹配时按提示挑一处——先比自动编号（“3.2”“第五条”），再比段首（段首是“3.2”不算“3.2.1”），
+ * 最后比段内；同一档里不止一处、或哪一档都对不上时返回 null（按歧义处理，不再默认改第一处）。纯函数。
+ */
+export function pickByHint(cands: readonly { label: string | null; text: string; row?: string; col?: string; lead?: string }[], hint: string): number | null {
+  const norm = (s: string) => s.replace(/\s+/g, "").replace(/[.、．:：）)]+$/, "");
+  const h = norm(hint);
+  if (!h) return null;
+  // “行名｜列名”（“第 2 期｜应还本金”）：每一段都要出现在该格所在行或该列表头里（去空白比较）
+  const parts = hint.split(/[｜|/／,，、;；]+/).map((x) => x.replace(/\s+/g, "")).filter(Boolean);
+  const tiers: ((c: { label: string | null; text: string; row?: string; col?: string; lead?: string }) => boolean)[] = [
+    (c) => c.label !== null && norm(c.label) === h,
+    (c) => {
+      const t = `${c.label ?? ""}${c.text}`.replace(/\s+/g, "");
+      return t.startsWith(h) && !/^[.．]?\d/.test(t.slice(h.length));
+    },
+    (c) => `${c.label ?? ""} ${c.text}`.includes(hint),
+    // 表格格子：提示写的是同一行别的格子（行首的项目名、期次）
+    (c) => !!c.row && c.row.includes(hint),
+    (c) => parts.length >= 2 && !!c.row && parts.every((x) => `${c.row}${c.col ?? ""}`.replace(/\s+/g, "").includes(x)),
+    // 几张表的行名列名相同（价款构成表与付款表都有“合计｜金额（元）”）：再加表前那段的条款号或文字（第 35 批 R5）
+    (c) => parts.length >= 2 && !!c.row && !!c.lead && parts.every((x) => `${c.lead}${c.row}${c.col ?? ""}`.replace(/\s+/g, "").includes(x)),
+  ];
+  for (const tier of tiers) {
+    const hits = cands.map((c, i) => (tier(c) ? i : -1)).filter((i) => i >= 0);
+    if (hits.length === 1) return hits[0]!;
+    if (hits.length > 1) return null;
+  }
+  return null;
+}
+
+/** XML 结构自检：标签逐一配对（忽略声明、注释、CDATA）。不成立抛错——整体停止写入、原件不动。 */
+export function assertWellFormed(xml: string, part: string): void {
+  const stack: string[] = [];
+  const body = xml.replace(/<\?[\s\S]*?\?>|<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>/g, "");
+  for (const m of body.matchAll(/<(\/?)([A-Za-z_][\w.:-]*)\b[^>]*?(\/?)>/g)) {
+    if (m[3] === "/") continue;
+    if (!m[1]) {
+      stack.push(m[2]!);
+      continue;
+    }
+    if (stack.pop() !== m[2]) {
+      throw new DomainError("unsupported_file", `写入后 ${part} 的结构不完整（原件里有修订痕迹、文本框或域等复杂结构），已停止写入、原件未改；请手工修改这几处`, 422, { part });
+    }
+  }
+  if (stack.length > 0) throw new DomainError("unsupported_file", `写入后 ${part} 的结构不完整，已停止写入、原件未改；请手工修改这几处`, 422, { part });
+}
+
+/** 在段落的 w:pPr/w:rPr 里加段落标记删除（<w:del …/>）；没有 pPr / rPr 的补上；带分节符（w:sectPr）的段落原样返回。纯函数。 */
+export function markParagraphDeleted(paraXml: string, id: number, author: string, date: string): string {
+  const mark = `<w:del w:id="${id}" w:author="${author}" w:date="${date}"/>`;
+  const open = /^<w:p\b[^>]*>/.exec(paraXml)![0];
+  const pPr = /^<w:pPr\b[^>]*>[\s\S]*?<\/w:pPr>/.exec(paraXml.slice(open.length))?.[0];
+  if (!pPr) return `${open}<w:pPr><w:rPr>${mark}</w:rPr></w:pPr>${paraXml.slice(open.length)}`;
+  // 带分节符的不动；已有段落格式修订（w:pPrChange 里嵌着旧的 w:pPr）的也不动，免得把嵌套结构切坏
+  if (/<w:sectPr\b|<w:pPrChange\b/.test(paraXml)) return paraXml;
+  // w:pPr 里 w:rPr 之后只能是 w:sectPr / w:pPrChange：有 rPr 的加在 rPr 里，没有的加在这两者之前（或末尾）
+  const rPr = /<w:rPr\b[^>]*>[\s\S]*?<\/w:rPr>|<w:rPr\b[^>]*\/>/.exec(pPr);
+  let next: string;
+  if (rPr) next = pPr.replace(rPr[0], rPr[0].endsWith("/>") ? `<w:rPr>${mark}</w:rPr>` : rPr[0].replace(/<\/w:rPr>$/, `${mark}</w:rPr>`));
+  else {
+    const at = pPr.search(/<w:pPrChange\b|<\/w:pPr>$/);
+    next = `${pPr.slice(0, at)}<w:rPr>${mark}</w:rPr>${pPr.slice(at)}`;
+  }
+  return open + next + paraXml.slice(open.length + pPr.length);
+}
+
+/** 段后插入：新段落沿用目标段落的段落格式（去掉分节 w:sectPr、段落标记的 w:rPr 与已有修订标记），段落标记标为插入。 */
+/**
+ * 原文与新文本的最小改动：去掉相同的开头与结尾，只剩中间一段删除、一段插入。按码点切分（不拆开代理对）。
+ * 删除整段（新文本为空）时原样整段删除；新旧相同时不产生修订。纯函数。
+ */
+/**
+ * 锚点与新文本之间的逐处改动（V16 第 41 批）：按“数字串整体、其余逐字”切分后求最长公共子序列，相邻改动之间不变的字少于 4 个的并成一处。
+ * 返回各处在锚点里的起止（UTF-16 下标）与该处的新字；整体相同返回一处空改动。改动太碎（超过 6 处）或不变的字不到较长一方的六成时，
+ * 说明是整句重写——退回“去掉相同的开头与结尾、中间一处”的做法（读起来是一句换一句，不是满篇碎片）。纯函数。
+ */
+export function changeHunks(original: string, replacement: string): { a0: number; a1: number; added: string }[] {
+  const one = (): { a0: number; a1: number; added: string }[] => {
+    const m = minimalChange(original, replacement);
+    return [{ a0: m.keepHead.length, a1: original.length - m.keepTail.length, added: m.added }];
+  };
+  if (replacement.length === 0 || original === replacement) return one();
+  const tok = (t: string): string[] => t.match(/[0-9０-９.,，．%％零〇壹贰叁肆伍陆柒捌玖拾佰仟萬]+|[一二三四五六七八九十百千两]+|[\uD800-\uDBFF][\uDC00-\uDFFF]|[\s\S]/g) ?? [];
+  const A = tok(original);
+  const B = tok(replacement);
+  if (A.length * B.length > 4_000_000) return one();
+  // 最长公共子序列（按词元）
+  const n = A.length;
+  const m = B.length;
+  const L: Uint32Array[] = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i]![j] = A[i] === B[j] ? L[i + 1]![j + 1]! + 1 : Math.max(L[i + 1]![j]!, L[i]![j + 1]!);
+  const raw: { a0: number; a1: number; added: string; }[] = [];
+  let i = 0;
+  let j = 0;
+  let pa = 0;
+  let cur: { a0: number; a1: number; added: string } | null = null;
+  let same = 0;
+  const flush = () => {
+    if (cur) raw.push(cur);
+    cur = null;
+  };
+  while (i < n || j < m) {
+    if (i < n && j < m && A[i] === B[j]) {
+      flush();
+      pa += A[i]!.length;
+      same += A[i]!.length;
+      i++;
+      j++;
+    } else if (j < m && (i >= n || L[i]![j + 1]! >= L[i + 1]![j]!)) {
+      cur ??= { a0: pa, a1: pa, added: "" };
+      cur.added += B[j]!;
+      j++;
+    } else {
+      cur ??= { a0: pa, a1: pa, added: "" };
+      pa += A[i]!.length;
+      cur.a1 = pa;
+      i++;
+    }
+  }
+  flush();
+  if (raw.length <= 1) return one();
+  // 并掉挨得太近的改动：中间不变的字少于 4 个的合成一处（“三十日”改“十五个工作日”不拆成三处）
+  const merged: { a0: number; a1: number; added: string }[] = [];
+  for (const h of raw) {
+    const prev = merged.at(-1);
+    if (prev && h.a0 - prev.a1 < 4) {
+      prev.added += original.slice(prev.a1, h.a0) + h.added;
+      prev.a1 = h.a1;
+    } else merged.push({ ...h });
+  }
+  if (merged.length <= 1 || merged.length > 6 || same < Math.max(original.length, replacement.length) * 0.6) return one();
+  return merged;
+}
+
+/** 数字、金额与中文大写数字的用字（最小改动不在它们中间切开）。 */
+const NUMERIC = /[0-9０-９.,，．%％零〇壹贰叁肆伍陆柒捌玖拾佰仟萬]/;
+
+export function minimalChange(original: string, replacement: string): { keepHead: string; removed: string; added: string; keepTail: string } {
+  const a = Array.from(original);
+  const b = Array.from(replacement);
+  if (b.length === 0) return { keepHead: "", removed: original, added: "", keepTail: "" };
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head]) head++;
+  let tail = 0;
+  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+  // 不在数字中间切开（第 34 批律师验收：13.50 改 14.20 显示成“1[-3.5-][+4.2+]0”，金额、日期被切成碎片，对方核对容易看错）：
+  // 边界两侧都是数字、金额或中文大写数字的字时，退到整个数字的边界
+  const numAt = (xs: string[], i: number) => i >= 0 && i < xs.length && NUMERIC.test(xs[i]!);
+  while (head > 0 && numAt(a, head - 1) && (numAt(a, head) || numAt(b, head))) head--;
+  while (tail > 0 && numAt(a, a.length - tail) && (numAt(a, a.length - tail - 1) || numAt(b, b.length - tail - 1))) tail--;
+  return {
+    keepHead: a.slice(0, head).join(""),
+    removed: a.slice(head, a.length - tail).join(""),
+    added: b.slice(head, b.length - tail).join(""),
+    keepTail: a.slice(a.length - tail).join(""),
+  };
+}
+
+const ARTICLE_LINE_RE = /^\s*第\s*[0-9一二三四五六七八九十百零〇]{1,6}\s*条\s*/;
+
+/**
+ * 插在某条最后一款之后、首行写“第 N 条 标题”、其后还有正文的：返回锚点所属那一条的标题段落，首行照它的格式写
+ * （自动编号的去掉“第 N 条”由 Word 续号）。V10 真实走查 V12：自动编号的合同里，插在 6.1 后的新条只能跟着成 6.2～6.5。
+ * 只认明写的“第 N 条”，不猜短句是不是标题；锚点本身是条标题或不在任何条之下的，不改变原做法。
+ */
+function articleHeadingFor(paras: readonly ParagraphMap[], labels: readonly (string | null)[], at: number, newText: string): ParagraphMap | null {
+  const lines = newText.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+  if (lines.length < 2) return null;
+  const first = lines[0]!;
+  if (!ARTICLE_LINE_RE.test(first)) return null;
+  const own = labels[at] ?? "";
+  const isArticle = (i: number): boolean => {
+    const lab = labels[i] ?? "";
+    return (!!lab && !/\d+\.\d+/.test(lab) && /^(第.{1,6}条|\d{1,3}\.?|[一二三四五六七八九十]{1,3}、?)$/.test(lab.trim())) || ARTICLE_LINE_RE.test(paras[i]?.text ?? "");
+  };
+  if (isArticle(at)) return null;
+  if (own && !/\d+\.\d+/.test(own)) return null;
+  for (let i = at - 1; i >= 0; i--) if (isArticle(i)) return paras[i]!;
+  return null;
+}
+
+function insertParagraphsAfter(
+  xml: string,
+  target: ParagraphMap,
+  op: RevisionOp,
+  comments: { id: number; author: string; date: string; text: string }[],
+  nextId: () => number,
+  applied: AppliedRevision[],
+  paragraphIndex: number,
+  heading: { para: ParagraphMap; labeled: boolean } | null = null,
+  /** 表后插入：新段落放在 at（表格结束处），同一张表之后的多条插入按 key 接在一起；格式仍取 target（表前那一段）。 */
+  place: { at: number; key: string; formatParagraphIndex: number } | null = null,
+): string {
+  const lines = op.newText.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+  if (lines.length === 0) throw new DomainError("anchor_mismatch", `修订 ${op.opId} 插入的条款为空`, 422, { opId: op.opId });
+  const paraXml = xml.slice(target.xmlStart, target.xmlEnd);
+  // 段落格式按配对标签取全（第 34 批 D04：段落带他人格式修订 w:pPrChange 时，原先只取到半截、写坏文件）
+  const pprOf = (px: string): string => {
+    const el = findElement(px, "w:pPr");
+    const full = el && /^<w:p\b[^>]*>\s*$/.test(px.slice(0, el.start)) ? px.slice(el.start, el.end) : "";
+    return full.endsWith("/>") || !full ? "" : removeElements(full.slice(full.indexOf(">") + 1, full.length - "</w:pPr>".length), ["w:sectPr", "w:rPr", "w:pPrChange"]);
+  };
+  const basePpr = pprOf(paraXml);
+  const rpr = cleanRpr(target.segments.find((s) => !s.deleted && !s.fresh)?.rPr ?? null);
+  // 新增独立一条（V10 真实走查 V12）：首行是条标题时沿用本条标题段落的格式与编号级别（自动编号续成下一条），其余各行仍是款
+  const headPpr = heading ? pprOf(xml.slice(heading.para.xmlStart, heading.para.xmlEnd)) : "";
+  const headRpr = heading ? cleanRpr(heading.para.segments.find((s) => !s.deleted && !s.fresh)?.rPr ?? null) : "";
+  if (heading?.labeled) lines[0] = lines[0]!.replace(ARTICLE_LINE_RE, "").trim() || lines[0]!;
+  const date = new Date().toISOString();
+  const author = escapeXml(op.author);
+  let commentId = -1;
+  if (op.comment) {
+    commentId = nextId();
+    comments.push({ id: commentId, author: op.author, date, text: op.comment });
+  }
+  const paras = lines.map((line, i) => {
+    const markId = nextId();
+    const insId = nextId();
+    const open = i === 0 && commentId >= 0 ? `<w:commentRangeStart w:id="${commentId}"/>` : "";
+    const close =
+      i === lines.length - 1 && commentId >= 0
+        ? `<w:commentRangeEnd w:id="${commentId}"/><w:r><w:rPr><w:rStyle w:val="CommentReference"/></w:rPr><w:commentReference w:id="${commentId}"/></w:r>`
+        : "";
+    return (
+      `<w:p><w:pPr>${heading && i === 0 ? headPpr : basePpr}<w:rPr><w:ins w:id="${markId}" w:author="${author}" w:date="${date}"/></w:rPr></w:pPr>${open}` +
+      `<w:ins w:id="${insId}" w:author="${author}" w:date="${date}" kwl-new="1"><w:r>${heading && i === 0 ? headRpr : rpr}${runContent(line)}</w:r></w:ins>${close}</w:p>`
+    );
+  });
+  if (place) {
+    applied.push({ opId: op.opId, status: "applied", paragraphIndex, formatParagraphIndex: place.formatParagraphIndex, placement: "after_table" });
+    const taggedAfter = paras.map((p) => p.replace(/^<w:p>/, `<w:p kwl-ins="${place.key}">`));
+    let pos = place.at;
+    for (;;) {
+      const m = /^<w:p\b[^>]*>[\s\S]*?<\/w:p>/.exec(xml.slice(pos));
+      if (!m || !m[0].startsWith(`<w:p kwl-ins="${place.key}">`)) break;
+      pos += m[0].length;
+    }
+    return xml.slice(0, pos) + taggedAfter.join("") + xml.slice(pos);
+  }
+  applied.push({ opId: op.opId, status: "applied", paragraphIndex, formatParagraphIndex: paragraphIndex });
+  // 同一段之后已经插过的（复核 Q2-04）：接在它们后面，最终顺序与写入顺序一致；目标段落打上编号，写完统一去掉
+  const head = /^<w:p\b[^>]*>/.exec(paraXml)![0];
+  const known = /\skwl-anchor="(\d+)"/.exec(head)?.[1];
+  const k = known ?? String((xml.match(/ kwl-anchor="/g) ?? []).length + 1);
+  const tagged = paras.map((p) => p.replace(/^<w:p>/, `<w:p kwl-ins="${k}">`));
+  let out = known ? xml : xml.slice(0, target.xmlStart) + head.replace(/>$/, ` kwl-anchor="${k}">`) + xml.slice(target.xmlStart + head.length);
+  let at = target.xmlEnd + (known ? 0 : ` kwl-anchor="${k}"`.length);
+  for (;;) {
+    const m = /^<w:p\b[^>]*>[\s\S]*?<\/w:p>/.exec(out.slice(at));
+    if (!m || !m[0].startsWith(`<w:p kwl-ins="${k}">`)) break;
+    at += m[0].length;
+  }
+  out = out.slice(0, at) + tagged.join("") + out.slice(at);
+  return out;
+}
+
+/** 一行里的各部分：行属性、表格属性例外、各单元格（直接子元素）。结构里有内容控件等包着单元格的，返回 null（不自动改）。 */
+function rowParts(rowXml: string): { open: string; pre: string; trPr: string; cells: string[] } | null {
+  const open = /^<w:tr\b[^>]*>/.exec(rowXml)?.[0];
+  if (!open || !rowXml.endsWith("</w:tr>")) return null;
+  const inner = rowXml.slice(open.length, rowXml.length - "</w:tr>".length);
+  let pre = "";
+  let trPr = "";
+  const cells: string[] = [];
+  for (const c of childElements(inner)) {
+    const el = inner.slice(c.start, c.end);
+    if (c.name === "w:tblPrEx") pre = el;
+    else if (c.name === "w:trPr") trPr = el;
+    else if (c.name === "w:tc") cells.push(el);
+    else if (c.name === "w:bookmarkStart" || c.name === "w:bookmarkEnd" || c.name === "w:proofErr") continue;
+    else return null;
+  }
+  return cells.length > 0 ? { open, pre, trPr, cells } : null;
+}
+
+/** 行属性里加上行级修订标记（w:ins / w:del 排在行属性的最后，只在 w:trPrChange 之前）；原有的行级修订标记去掉。 */
+function trPrWith(trPr: string, mark: string, forNewRow: boolean): string {
+  let body = trPr && !trPr.endsWith("/>") ? trPr.slice(trPr.indexOf(">") + 1, trPr.length - "</w:trPr>".length) : "";
+  body = removeElements(body, ["w:trPrChange"]).replace(/<w:(?:ins|del)\b[^>]*\/>/g, "");
+  // 新增的行不是表头行：不带“在各页顶端重复”
+  if (forNewRow) body = body.replace(/<w:tblHeader\b[^>]*\/>/g, "");
+  return `<w:trPr>${body}${mark}</w:trPr>`;
+}
+
+const splitRowCells = (text: string): string[] => {
+  const t = text.replace(/\r?\n/g, " ");
+  const parts = t.includes("｜") ? t.split("｜") : t.includes("\t") ? t.split("\t") : t.split("|");
+  // “| a | b |”这种写法首尾各多出一个空串
+  if (parts.length > 2 && parts[0]!.trim() === "" && parts.at(-1)!.trim() === "" && !t.includes("\t")) return parts.slice(1, -1).map((x) => x.trim());
+  return parts.map((x) => x.trim());
+};
+
+/**
+ * 表格新增一行（V16 第 41 批；真实走查 D1：律师要求“附件三表格在‘甲方运维对接人’一行之后新增一行”，原先工具只能在格子里加段落，
+ * 助手如实回报“未写入，请在 Word 里手工加”）。新行照抄锚点所在行每一格的单元格属性与首段、首个 run 的格式；纵向合并的格子续接合并。
+ */
+function insertRowAfter(
+  xml: string,
+  target: ParagraphMap,
+  op: RevisionOp,
+  comments: { id: number; author: string; date: string; text: string }[],
+  nextId: () => number,
+  applied: AppliedRevision[],
+  paragraphIndex: number,
+): string {
+  const row = enclosingElement(xml, "tr", target.xmlStart, "inner");
+  if (!row) throw new DomainError("anchor_mismatch", `修订 ${op.opId} 锚点不在表格里：新增表格行的锚点写要接在其后的那一行里任一格的原文`, 422, { opId: op.opId });
+  const parts = rowParts(xml.slice(row.start, row.end));
+  if (!parts) throw new DomainError("anchor_mismatch", `修订 ${op.opId} 这一行的结构无法自动复制（单元格外面包着内容控件等）：请在 Word 里手工加这一行`, 422, { opId: op.opId });
+  const merged = parts.cells.map((c) => /<w:vMerge\b/.test(findElementText(c, "w:tcPr")));
+  const free = merged.filter((m) => !m).length;
+  const texts = splitRowCells(op.newText);
+  let cellTexts: string[];
+  if (texts.length === parts.cells.length) cellTexts = texts.map((t, i) => (merged[i] ? "" : t));
+  else if (texts.length === free) {
+    let k = 0;
+    cellTexts = merged.map((m) => (m ? "" : texts[k++]!));
+  } else {
+    throw new DomainError("anchor_mismatch", `修订 ${op.opId} 新增的表格行应有 ${parts.cells.length} 格${free !== parts.cells.length ? `（其中 ${parts.cells.length - free} 格是纵向合并的，可以留空或不写，即写 ${free} 格）` : ""}，收到 ${texts.length} 格：各格文字用“｜”分隔，空格子留空`, 422, { opId: op.opId });
+  }
+  if (cellTexts.every((t) => t === "")) throw new DomainError("anchor_mismatch", `修订 ${op.opId} 新增的表格行没有文字`, 422, { opId: op.opId });
+  const date = new Date().toISOString();
+  const author = escapeXml(op.author);
+  let commentId = -1;
+  if (op.comment) {
+    commentId = nextId();
+    comments.push({ id: commentId, author: op.author, date, text: op.comment });
+  }
+  const firstText = cellTexts.findIndex((t) => t !== "");
+  const key = String(800000 + (xml.slice(0, row.start).match(/<w:tr\b/g) ?? []).length + 1);
+  const cells = parts.cells.map((cell, i) => {
+    let tcPr = findElementText(cell, "w:tcPr");
+    if (tcPr) {
+      tcPr = removeElements(tcPr, ["w:tcPrChange"]).replace(/<w:(?:cellIns|cellDel|cellMerge)\b[^>]*\/>/g, "");
+      // 纵向合并：新行在合并组里续接（起始格改成续接）
+      tcPr = tcPr.replace(/<w:vMerge\b[^>]*\/>/, "<w:vMerge/>");
+    }
+    const firstPara = /<w:p\b[^>]*>[\s\S]*?<\/w:p>|<w:p\b[^>]*\/>/.exec(cell.replace(/<w:tbl\b[\s\S]*<\/w:tbl>/, ""))?.[0] ?? "";
+    const pPrEl = firstPara ? findElement(firstPara, "w:pPr") : null;
+    const pPrFull = pPrEl ? firstPara.slice(pPrEl.start, pPrEl.end) : "";
+    const pPr = pPrFull && !pPrFull.endsWith("/>") ? removeElements(pPrFull.slice(pPrFull.indexOf(">") + 1, pPrFull.length - "</w:pPr>".length), ["w:sectPr", "w:rPr", "w:pPrChange", "w:numPr"]) : "";
+    const rPrEl = /<w:r\b[^>]*>\s*(<w:rPr\b[^>]*>[\s\S]*?<\/w:rPr>)/.exec(firstPara)?.[1] ?? "";
+    const rPr = cleanRpr(rPrEl || null);
+    const text = cellTexts[i]!;
+    const markId = nextId();
+    const mark = `<w:rPr><w:ins w:id="${markId}" w:author="${author}" w:date="${date}"/></w:rPr>`;
+    if (!text) return `<w:tc>${tcPr}<w:p kwl-ins="${key}"><w:pPr>${pPr}${mark}</w:pPr></w:p></w:tc>`;
+    const insId = nextId();
+    const open = i === firstText && commentId >= 0 ? `<w:commentRangeStart w:id="${commentId}"/>` : "";
+    const close = i === firstText && commentId >= 0 ? commentEnd(commentId) : "";
+    return `<w:tc>${tcPr}<w:p kwl-ins="${key}"><w:pPr>${pPr}${mark}</w:pPr>${open}<w:ins w:id="${insId}" w:author="${author}" w:date="${date}" kwl-new="1"><w:r>${rPr}${runContent(text)}</w:r></w:ins>${close}</w:p></w:tc>`;
+  });
+  const rowMark = `<w:ins w:id="${nextId()}" w:author="${author}" w:date="${date}"/>`;
+  const newRow = `<w:tr kwl-ins="${key}">${parts.pre}${trPrWith(parts.trPr, rowMark, true)}${cells.join("")}</w:tr>`;
+  // 同一行之后已经加过的新行：接在它们后面，顺序与写入顺序一致
+  let at = row.end;
+  for (;;) {
+    const next = /^\s*<w:tr\b[^>]*\skwl-ins="/.test(xml.slice(at, at + 200)) ? enclosingElement(xml, "tr", at + xml.slice(at).indexOf("<w:tr") + 1, "inner") : null;
+    if (!next) break;
+    at = next.end;
+  }
+  applied.push({ opId: op.opId, status: "applied", paragraphIndex, formatParagraphIndex: paragraphIndex, placement: "row_inserted" });
+  return xml.slice(0, at) + newRow + xml.slice(at);
+}
+
+/**
+ * 删除表格一行（V16 第 41 批）：行里每个 run 的文字标为删除、行标记标为删除；接受修订后整行消失（见 sanitize）。
+ * 行里已有修订痕迹、域、图片、脚注引用或嵌套表格的不自动改；纵向合并组的起始行（左侧类别栏的字写在这一行）删除时，
+ * 合并格里的字不标删除——接受修订时移到下一行，类别栏不丢。
+ */
+function deleteRow(
+  xml: string,
+  target: ParagraphMap,
+  op: RevisionOp,
+  comments: { id: number; author: string; date: string; text: string }[],
+  nextId: () => number,
+  applied: AppliedRevision[],
+  paragraphIndex: number,
+): string {
+  if (op.newText.trim() !== "") throw new DomainError("anchor_mismatch", `修订 ${op.opId} 删除表格行时新文字须为空`, 422, { opId: op.opId });
+  const row = enclosingElement(xml, "tr", target.xmlStart, "inner");
+  if (!row) throw new DomainError("anchor_mismatch", `修订 ${op.opId} 锚点不在表格里：删除表格行的锚点写该行任一格的原文`, 422, { opId: op.opId });
+  const rowXml = xml.slice(row.start, row.end);
+  const parts = rowParts(rowXml);
+  if (!parts) throw new DomainError("anchor_mismatch", `修订 ${op.opId} 这一行的结构无法自动处理：请在 Word 里手工删除这一行`, 422, { opId: op.opId });
+  if (/<w:tbl\b/.test(parts.cells.join(""))) throw new DomainError("anchor_mismatch", `修订 ${op.opId} 这一行里嵌着表格：请在 Word 里手工删除`, 422, { opId: op.opId });
+  if (/<w:(?:ins|del|moveFrom|moveTo)\b[^>]*[^/]>/.test(rowXml)) {
+    throw new DomainError("anchor_mismatch", /kwl-new="/.test(rowXml) ? `修订 ${op.opId} 与本次另一处修改落在同一处：这一行要删除的，不要再改它里面的字` : `修订 ${op.opId} 这一行里有原件已有的修订痕迹：请先在 Word 里接受或拒绝对方的修订，或手工删除这一行`, 422, { opId: op.opId });
+  }
+  const date = new Date().toISOString();
+  const author = escapeXml(op.author);
+  let commentId = -1;
+  if (op.comment) {
+    commentId = nextId();
+    comments.push({ id: commentId, author: op.author, date, text: op.comment });
+  }
+  let commented = false;
+  const cells = parts.cells.map((cell) => {
+    // 纵向合并组起始格：字留着（接受修订时移到下一行）
+    if (/<w:vMerge\b[^>]*w:val="restart"/.test(findElementText(cell, "w:tcPr"))) return cell;
+    return cell.replace(/<w:r\b[^>]*>[\s\S]*?<\/w:r>/g, (run) => {
+      const open = /^<w:r\b[^>]*>/.exec(run)![0];
+      const kids = childElements(run.slice(open.length, run.length - "</w:r>".length));
+      if (kids.some((k) => !RUN_TEXT_CHILDREN.has(k.name))) throw new DomainError("anchor_mismatch", `修订 ${op.opId} 这一行里有脚注引用、域、图片或特殊符号：请在 Word 里手工删除这一行`, 422, { opId: op.opId });
+      const body = run.replace(/<w:t(\s[^>]*)?>/g, "<w:delText$1>").replace(/<\/w:t>/g, "</w:delText>");
+      const del = `<w:del w:id="${nextId()}" w:author="${author}" w:date="${date}" kwl-new="1">${body}</w:del>`;
+      if (commentId >= 0 && !commented) {
+        commented = true;
+        return `<w:commentRangeStart w:id="${commentId}"/>${del}${commentEnd(commentId)}`;
+      }
+      return del;
+    });
+  });
+  const rowMark = `<w:del w:id="${nextId()}" w:author="${author}" w:date="${date}"/>`;
+  const out = `${parts.open}${parts.pre}${trPrWith(parts.trPr, rowMark, false)}${cells.join("")}</w:tr>`;
+  applied.push({ opId: op.opId, status: "applied", paragraphIndex, placement: "row_deleted" });
+  return xml.slice(0, row.start) + out + xml.slice(row.end);
+}
+
+/** 取某个直接出现的元素的全文（没有返回空串）。 */
+function findElementText(xml: string, name: string): string {
+  const el = findElement(xml, name);
+  return el ? xml.slice(el.start, el.end) : "";
+}
+
+function nextIdSeed(xml: string): number {
+  let max = 0;
+  for (const m of xml.matchAll(/w:id="(\d+)"/g)) {
+    const v = Number(m[1]);
+    if (v >= max) max = v + 1;
+  }
+  return max;
+}
+
+/** 确保 comments part 的关系与内容类型注册存在（幂等）。 */
+function ensureCommentsInfrastructure(files: Map<string, Buffer>): void {
+  const relsName = "word/_rels/document.xml.rels";
+  const ctName = "[Content_Types].xml";
+  const rels = files.get(relsName)?.toString("utf8") ?? `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`;
+  if (!rels.includes("comments.xml")) {
+    const ids = [...rels.matchAll(/Id="rId(\d+)"/g)].map((m) => Number(m[1]));
+    const nextRid = (ids.length ? Math.max(...ids) : 0) + 1;
+    files.set(
+      relsName,
+      Buffer.from(
+        rels.replace(
+          "</Relationships>",
+          `<Relationship Id="rId${nextRid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml"/></Relationships>`,
+        ),
+        "utf8",
+      ),
+    );
+  }
+  const ct = files.get(ctName)?.toString("utf8");
+  if (ct && !ct.includes("comments+xml")) {
+    files.set(
+      ctName,
+      Buffer.from(
+        ct.replace(
+          "</Types>",
+          `<Override PartName="/word/comments.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"/></Types>`,
+        ),
+        "utf8",
+      ),
+    );
+  }
+}
+
+/**
+ * 原件里已有的修订痕迹（第 34 批）：插入、删除、移动与格式修订的处数（只计数，不返回署名）。
+ * 修订稿保留它们；清洁稿“接受全部修订”会把它们与本次修改一并接受——助手须告诉律师。
+ */
+export function existingRevisions(docx: Buffer): { insertions: number; deletions: number; moves: number; format_changes: number; total: number } {
+  const xml = readZipEntries(docx).get("word/document.xml")?.toString("utf8") ?? "";
+  const count = (re: RegExp) => (xml.match(re) ?? []).length;
+  const insertions = count(/<w:ins\b[^>]*[^/]>/g);
+  const deletions = count(/<w:del\b[^>]*[^/]>/g);
+  const moves = count(/<w:moveTo\b[^>]*[^/]>/g);
+  const format_changes = count(/<w:(?:rPrChange|pPrChange)\b/g);
+  return { insertions, deletions, moves, format_changes, total: insertions + deletions + moves + format_changes };
+}

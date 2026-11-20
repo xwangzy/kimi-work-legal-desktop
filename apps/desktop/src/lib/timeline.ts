@@ -1,0 +1,683 @@
+/**
+ * 执行态时间线（第 03 篇 §4.3）：事件 → 律师看得懂的步骤（只说事实）。纯函数，可单测（复核 B4-B07/B4-B21/B4-B23 抽出自 RunView）。
+ * 律师层（默认可见）与处理细节（默认收起；UIUX P0-4）分开；工程原因码经映射表转中文。
+ */
+import type { RunEvent, RunMode } from "../api.ts";
+import { ARTIFACT_LABELS, methodName, MODE_LABELS, RUN_STATUS_LABELS } from "./labels.ts";
+import { modeChipLabel } from "./mode-options.ts";
+
+export const TOOL_LABELS: Record<string, string> = {
+  // V16：与 materials.read_excerpt 同名（原“读取材料 / 阅读材料”交替出现）
+  Read: "阅读材料",
+  Glob: "查找文件",
+  Grep: "检索材料内容",
+  Write: "写草稿",
+  Edit: "修改草稿",
+  Bash: "在本机计算 / 整理数据",
+  WebSearch: "联网查资料",
+  FetchURL: "打开网页",
+  Agent: "子任务",
+  AgentSwarm: "同时做几项核对",
+  TodoList: "任务清单",
+  TaskList: "正在计算",
+  TaskOutput: "查看计算结果",
+  TaskStop: "停下一项计算",
+  EnterPlanMode: "制定计划",
+  ExitPlanMode: "提交计划",
+  AskUserQuestion: "向你提问",
+  ReadMediaFile: "查看图片",
+  Skill: "使用方法模板",
+};
+
+/** 上游说的是余额或额度不足（不是连不上）：与内核给律师的失败说明同一口径（V16 第 41 批真实走查：额度用完时这一步写成“AI 服务连不上”，下一行又写“余额或额度不足”） */
+const QUOTA_RE = /额度不足|预扣费|余额不足|insufficient[_ ]?(?:quota|balance|credit)|quota[_ ]?exceeded|billing|欠费/i;
+/** 本产品自己的额度规则（第 44 批：频率窗口、本期额度、律所上限、个人额度）：说“暂停”，不说“连不上”。 */
+const OWN_QUOTA_RE = /频率窗口|额度已用完|用量上限|个人额度|quota_(?:burst|exhausted|cap_reached|seat_limit)/;
+
+export function toolLabel(name: string): string {
+  if (name.startsWith("mcp__legal__")) {
+    // 引擎里的工具名把第一个点写成下划线（materials.read_excerpt → mcp__legal__materials_read_excerpt）
+    const raw = name.slice("mcp__legal__".length);
+    return LEGAL_TOOL_LABELS[raw] ?? LEGAL_TOOL_LABELS[raw.replace("_", ".")] ?? "法律工具";
+  }
+  if (name.startsWith("mcp__")) return "外部资料库";
+  return TOOL_LABELS[name] ?? name;
+}
+
+const SKIP_REASONS: Record<string, string> = {
+  format: "这种文件暂时读不了",
+  too_large: "文件过大",
+  limit: "超过数量上限",
+  instructions: "助手指令文件，不作为成果",
+  unreadable: "无法解密读取（文件损坏，或不是经本软件写入的）",
+};
+
+/** 法律工具的中文名（律师层；原始工具名只在“处理细节”里出现）。 */
+const LEGAL_TOOL_LABELS: Record<string, string> = {
+  "materials.read_excerpt": "阅读材料",
+  "law.get_version": "查法条版本",
+  "law.get_article": "查看条文原文",
+  "law.search": "检索法规",
+  "citations.verify": "核对引用",
+  "calc.interest": "计算利息与违约金",
+  "calc.deadline": "计算期限",
+  "calc.labor": "计算经济补偿",
+  "calc.court_fee": "计算诉讼费",
+  "rules.propose": "起草审查要点",
+  "redact.scan": "检查个人信息",
+  "materials.list": "阅读材料",
+  "riskcards.submit": "找出风险",
+  "outline.submit": "列出论点与依据",
+  "outline.get": "读取你确认的论点",
+  "riskcards.list": "查看审查结论",
+  "facts.submit": "整理事实",
+  "facts.list": "查看事实",
+  "xlsx.render_table": "生成表格",
+  "xlsx.edit_cells": "修改表格",
+  "docx.render_report": "生成 Word 文书",
+  "docx.revise": "在原件上修订",
+  "docx.edit_draft": "修改文书草稿",
+  "docx.compare": "比对两版合同",
+};
+
+/** 没交出文书的原因（与内核 primaryDeliverableMissing 的 cause 对应）。 */
+const PRIMARY_MISSING_CAUSES: Record<string, string> = {
+  outline_pending: "论点与依据还在等你确认，确认后在本任务里追问即可补出文书",
+  outline_missing: "助手没有先把论点与依据交你确认，可以在本任务里追问补出文书",
+  no_word_output: "助手只交了表格或文字说明，可以在本任务里追问补出文书",
+  no_sheet_output: "助手只交了文字说明，可以在本任务里追问补出表格",
+  // V16 F6：内核新增的原因码
+  only_attachments: "助手只交了附件，没有交出主文书，可以在本任务里追问补出",
+};
+
+export interface Step {
+  key: string;
+  /** 律师层（默认可见）或处理细节（默认收起；UIUX P0-4）。 */
+  level: "lawyer" | "detail";
+  icon: "ok" | "fail" | "dot" | "wait";
+  title: string;
+  /** 事件时刻（ISO）；显示由执行页决定（Y4 R-12）。 */
+  at?: string;
+  /** 时刻之外的补充说明。 */
+  meta?: string;
+  agent?: string;
+  detail?: string;
+  /** 合并后的草稿名（v9.4：连续“草稿已生成”合成一行）。 */
+  drafts?: string[];
+  /** 这一行是一次运行的开始（run.started；“重新运行”会再来一次）。 */
+  attemptStart?: true;
+}
+
+/** 时间线的一行：普通步骤，或同一子任务的若干步骤合成的一组（Y4 #33：子任务折叠，默认只显示一行）。 */
+export type TimelineItem =
+  | { kind: "step"; step: Step; label?: string }
+  | { kind: "sub"; key: string; agent: string; label: string; steps: Step[]; failed: boolean; done: boolean };
+
+/** 连续多次只算一步的律师层动作（Z3 #29）：看目录、读原文都是“阅读材料”；每张风险卡一次提交合成“找出 n 处风险”。 */
+const MERGEABLE_TITLES = new Set(["阅读材料", "找出风险"]);
+/**
+ * 连续多次合成一行并写出次数的律师层动作（V16：真实任务里连续 8 行“查看条文原文”刷屏）。
+ * 值为次数的量词；“计算…”类（计算利息与违约金、计算期限等）按前缀归入。
+ */
+const COUNTED_TITLES: Record<string, string> = {
+  查看条文原文: "条",
+  查法条版本: "条",
+  检索法规: "次",
+  核对引用: "次",
+};
+function countUnit(title: string): string | undefined {
+  return COUNTED_TITLES[title] ?? (/^计算\S/.test(title) ? "次" : undefined);
+}
+
+/**
+ * 合并连续的同类步骤（Z3 #29；V16 扩到查条文、检索法规、核对引用、计算类）：同一子任务里紧挨着的同名律师层步骤合成一行
+ * （中间夹着的处理细节不打断）；查条文等写出次数（“查看条文原文（8 条）”）；有风险卡总数时写“找出 n 处风险”。
+ * 只合并律师层工具步骤，不碰联网与确认。纯函数。
+ */
+export function mergeRepeatSteps(steps: Step[], riskTotal?: number): Step[] {
+  const out: Step[] = [];
+  /** out 下标 → 合并前的标题与次数（只给计次的步骤）。 */
+  const counted = new Map<number, { base: string; n: number }>();
+  const DRAFT = /^草稿已生成：(.*)（待复核）$/;
+  for (const s of steps) {
+    const prev = out[out.length - 1];
+    // 连续生成多份草稿合成一行“生成 n 份草稿，待你复核”，名称放进说明（v9.4 U1 #12：原来 6 行逐份列出）
+    const m = s.level === "lawyer" ? DRAFT.exec(s.title) : null;
+    if (m && prev && prev.level === "lawyer" && prev.agent === s.agent && (prev.drafts || DRAFT.test(prev.title))) {
+      const names = [...(prev.drafts ?? [DRAFT.exec(prev.title)![1]!]), m[1]!];
+      out[out.length - 1] = { ...prev, title: `生成 ${names.length} 份草稿，待你复核`, drafts: names, detail: names.join("、"), at: s.at ?? prev.at };
+      continue;
+    }
+    if (s.level === "lawyer" && (MERGEABLE_TITLES.has(s.title) || countUnit(s.title))) {
+      // 往回找上一条律师层步骤（处理细节不打断合并）
+      let j = out.length - 1;
+      while (j >= 0 && out[j]!.level === "detail") j--;
+      const last = j >= 0 ? out[j]! : undefined;
+      const lastBase = counted.get(j)?.base ?? last?.title;
+      if (last && lastBase === s.title && last.agent === s.agent) {
+        const icon = last.icon === "fail" || s.icon === "fail" ? "fail" : last.icon === "wait" || s.icon === "wait" ? "wait" : "ok";
+        const unit = countUnit(s.title);
+        const n = (counted.get(j)?.n ?? 1) + 1;
+        if (unit) counted.set(j, { base: s.title, n });
+        out[j] = { ...last, icon, at: s.at ?? last.at, detail: last.detail ?? s.detail, title: unit ? `${s.title}（${n} ${unit}）` : last.title };
+        continue;
+      }
+    }
+    out.push(s);
+  }
+  if (riskTotal && riskTotal > 0) return out.map((s) => (s.title === "找出风险" && s.icon !== "wait" ? { ...s, title: `找出 ${riskTotal} 处风险` } : s));
+  return out;
+}
+
+/** 引擎内置工具：它们的自述是英文加本机路径（“Searching for '…' in /private/tmp/…”），一律不进律师层（V16 A1）。 */
+const ENGINE_TOOLS = new Set(["Read", "Glob", "Grep", "Bash", "Write", "Edit"]);
+/** 查阅方法自带的参考资料（路径在方法目录里）时，律师层不显示这一步（V16 A1）。 */
+const METHOD_REF_TOOLS = new Set(["Read", "Grep", "Glob"]);
+
+/**
+ * 工具自述能不能给律师看（V16 A1；复核 S5B-12）：须含中文；含本机路径（“/” 开头的多级路径、盘符路径、方法目录）
+ * 或以英文动词短语开头（Searching for / Reading / Listing / Running / Writing…）的一律不显示。纯函数。
+ */
+export function lawyerToolDescription(tool: string, description: unknown): string | undefined {
+  if (ENGINE_TOOLS.has(tool) || typeof description !== "string") return undefined;
+  const d = description.replace(/^[A-Z][A-Za-z ]{1,24}:\s*/, "").trim();
+  if (!d || !/[\u4e00-\u9fff]/.test(d)) return undefined;
+  if (/(^|[\s'"(（：:=])\/[^\s/]+\/[^\s]+/.test(d) || /\b[A-Za-z]:[\\/]/.test(d) || /[\\/]skills[\\/]/.test(d) || /kap-trusted/.test(d)) return undefined;
+  if (/^(search|read|list|run|writ|edit|find|look|check|creat|fetch|open|execut|updat|analy|get|load|scan|inspect|grep|glob|view|calculat|comput|process)[a-z]*\b/i.test(d)) return undefined;
+  return d;
+}
+
+/** 这一步是否在查阅方法自带的参考资料（自述里的路径在方法目录下）。纯函数。 */
+export function isMethodReference(tool: string, description: unknown): boolean {
+  return METHOD_REF_TOOLS.has(tool) && typeof description === "string" && /[\\/]skills[\\/]/.test(description);
+}
+
+/** 联网步骤不折叠：律师要能直接看到“实际发出什么”（复核 S7B-05）。 */
+const NETWORK_TITLES = new Set(["联网查资料", "打开网页"]);
+
+/**
+ * 子任务折叠（复核 S7B-05）：同一子任务的全部步骤（并发子任务交错出现时也归到一起）合成一组，放在它第一次出现的位置；
+ * 只有一步的不包成组；联网步骤不折叠；子任务按出现顺序称“子任务 1、2……”，不显示引擎内部编号。纯函数。
+ */
+export function groupSubtaskSteps(steps: Step[]): TimelineItem[] {
+  const order: string[] = [];
+  const byAgent = new Map<string, Step[]>();
+  for (const s of steps) {
+    if (!s.agent) continue;
+    if (!order.includes(s.agent)) order.push(s.agent);
+    if (NETWORK_TITLES.has(s.title)) continue;
+    if (!byAgent.has(s.agent)) byAgent.set(s.agent, []);
+    byAgent.get(s.agent)!.push(s);
+  }
+  const labelOf = (agent: string) => `子任务 ${order.indexOf(agent) + 1}`;
+  const out: TimelineItem[] = [];
+  const placed = new Set<string>();
+  for (const s of steps) {
+    if (!s.agent) {
+      out.push({ kind: "step", step: s });
+      continue;
+    }
+    const group = byAgent.get(s.agent);
+    if (NETWORK_TITLES.has(s.title) || !group) {
+      out.push({ kind: "step", step: s, label: labelOf(s.agent) });
+      continue;
+    }
+    if (group.length === 1) {
+      out.push({ kind: "step", step: s, label: labelOf(s.agent) });
+      continue;
+    }
+    if (placed.has(s.agent)) continue;
+    placed.add(s.agent);
+    out.push({
+      kind: "sub",
+      key: `sub-${s.key}`,
+      agent: s.agent,
+      label: labelOf(s.agent),
+      steps: group,
+      failed: group.some((x) => x.icon === "fail"),
+      done: group.every((x) => x.icon !== "wait"),
+    });
+  }
+  return out;
+}
+
+/**
+ * 律师层只在关键步骤显示时刻（Y4 R-12，复核 S7B-06）：第一步、最后一步、需要你处理或没有完成的步骤；其余律师层步骤不显示时刻。
+ * 返回应显示时刻的步骤 key（处理细节层另按时分秒显示）。纯函数。
+ */
+export function keyStepKeys(steps: Step[]): Set<string> {
+  const lawyer = steps.filter((s) => s.level === "lawyer");
+  const keys = new Set<string>();
+  if (lawyer[0]) keys.add(lawyer[0].key);
+  if (lawyer.at(-1)) keys.add(lawyer.at(-1)!.key);
+  for (const s of lawyer) if (s.icon === "fail" || s.icon === "wait") keys.add(s.key);
+  return keys;
+}
+
+/**
+ * 任务结束后过程收成一行（V18 A1）：“处理过程 · 用时 15 分 48 秒 · 44 步”。用时取第一步到最后一步的时刻（没有时刻时不写），
+ * 步数是律师层的步骤数（处理细节不算）。纯函数。
+ */
+export function processSummary(steps: readonly Step[], startedAt?: string | null): string {
+  const lawyer = steps.filter((s) => s.level === "lawyer");
+  const times = steps.map((s) => (s.at ? Date.parse(s.at) : NaN)).filter((t) => Number.isFinite(t));
+  const start = startedAt && Number.isFinite(Date.parse(startedAt)) ? Math.min(Date.parse(startedAt), ...times) : times.length ? Math.min(...times) : NaN;
+  const end = times.length ? Math.max(...times) : NaN;
+  const parts = ["处理过程"];
+  if (Number.isFinite(start) && Number.isFinite(end) && end >= start) parts.push(`用时 ${durationText(end - start)}`);
+  parts.push(`${lawyer.length} 步`);
+  return parts.join(" · ");
+}
+
+/** 时长的中文写法：不足 1 分钟写秒，不足 1 小时写“X 分 Y 秒”，再长写“X 小时 Y 分”。 */
+export function durationText(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s} 秒`;
+  if (s < 3600) return `${Math.floor(s / 60)} 分 ${s % 60} 秒`;
+  return `${Math.floor(s / 3600)} 小时 ${Math.floor((s % 3600) / 60)} 分`;
+}
+
+/**
+ * 结束后要一眼看到的问题（V18 A1 #3）：律师层里没有完成（fail）或只完成一部分（dot）的步骤，去掉最后那条“部分完成 / 失败”本身
+ * （状态已写在结果区标题里），同名的只留最后一条。纯函数。
+ */
+export function problemSteps(steps: readonly Step[]): Step[] {
+  const STATUS_TITLES = new Set(["部分完成", "失败", "已取消", "已超时", "已过期", "对账中"]);
+  const out = new Map<string, Step>();
+  // 只看最后一次运行：“重新运行”之后，上一次的失败（例如额度暂停、连不上）已经过去了，不再列成“没做完的地方”（第 44 批真实验收）
+  let from = 0;
+  for (let i = steps.length - 1; i >= 0; i--) {
+    if (steps[i]!.attemptStart) {
+      from = i;
+      break;
+    }
+  }
+  for (const s of steps.slice(from)) {
+    if (s.level !== "lawyer" || (s.icon !== "fail" && s.icon !== "dot")) continue;
+    if (STATUS_TITLES.has(s.title) && !s.detail) continue;
+    // 自动重试中的失败后来恢复了，不算问题；读材料、查条文这类工具步骤失败时助手会换个办法接着做，单写一个“阅读材料”也说明不了什么
+    if (/正在自动重试/.test(s.title) || MERGEABLE_TITLES.has(s.title) || countUnit(s.title.replace(/（\d+ [条次]）$/, ""))) continue;
+    // “失败”这类状态行带原因时，直接写原因
+    const item = STATUS_TITLES.has(s.title) ? { ...s, title: s.detail!, detail: undefined } : s;
+    out.delete(item.title);
+    out.set(item.title, item);
+  }
+  return [...out.values()];
+}
+
+/** 联网检索/抓取实际发出的内容（来自本机去向记录，按工具调用编号关联；v9.2 Y4 P0-A）。 */
+export interface SentInfo {
+  kind: "search" | "fetch";
+  /** 实际发出的查询或网址；未发出为 null。 */
+  text: string | null;
+  /** 检索：pass（令牌化后原样）/ generalized（去掉了当事人名称）/ confirmed_original（经你确认按原文）/ deny。 */
+  decision: string | null;
+  outcome: string;
+}
+
+/** 去向记录 → 工具调用编号 → 实际发出的内容（同一调用的预写与补全以补全为准）。纯函数。 */
+export function sentByToolCall(records: readonly { note: string | null; outcome?: string }[]): Map<string, SentInfo> {
+  const out = new Map<string, SentInfo>();
+  for (const r of records) {
+    let n: any;
+    try {
+      n = r.note ? JSON.parse(r.note) : null;
+    } catch {
+      n = null;
+    }
+    const id = typeof n?.tool_call_id === "string" ? n.tool_call_id : null;
+    if (!id || (n.purpose !== "search" && n.purpose !== "fetch")) continue;
+    const prev = out.get(id);
+    if (prev && n.phase === "start") continue;
+    out.set(id, {
+      kind: n.purpose,
+      text: n.purpose === "search" ? (typeof n.query?.sent === "string" ? n.query.sent : null) : typeof n.url?.requested === "string" && r.outcome !== "blocked" ? n.url.requested : null,
+      decision: n.purpose === "search" ? (typeof n.query?.decision === "string" ? n.query.decision : null) : null,
+      outcome: String(r.outcome ?? "sent"),
+    });
+  }
+  return out;
+}
+
+function sentDetail(s: SentInfo): string {
+  if (!s.text || s.outcome === "blocked") return s.kind === "search" ? "这次检索没有发出" : "这个网址没有打开";
+  if (s.kind === "fetch") return `打开：${s.text}`;
+  // 复核 S5B-11：“按原文”只保留机构名称，个人信息与标识符仍会替换
+  const note = s.decision === "generalized" ? "（已去掉当事人名称）" : s.decision === "confirmed_original" ? "（经你确认保留机构名称发出，个人信息仍已替换）" : "";
+  return `发出：${s.text}${note}`;
+}
+
+/** 事件 → 时间线步骤（只说事实）。sent：联网步骤实际发出的内容（没有则只提示去“数据去向”看）。 */
+export function buildSteps(events: RunEvent[], skillTitles: Record<string, string> = {}, sent: ReadonlyMap<string, SentInfo> = new Map()): Step[] {
+  const steps: Step[] = [];
+  const toolIndex = new Map<string, number>();
+  const approvalIndex = new Map<string, number>();
+  const questionIndex = new Map<string, number>();
+  for (const e of events) {
+    const p = e.payload ?? {};
+    // 时间不拼进说明文字：执行页按层级显示（律师层相对时间、处理细节时分秒、悬停完整时间；Y4 R-12）
+    const at = e.created_at;
+    switch (e.type) {
+      case "run.started":
+        steps.push({ key: `${e.event_id}`, level: "detail", icon: "ok", title: "已收到任务", at, attemptStart: true });
+        break;
+      case "agent.task_started":
+        steps.push({ key: `${e.event_id}`, icon: "ok", level: "detail", title: "助手开始工作", at });
+        break;
+      case "agent.started":
+        // 第 27 批（评审 U3-02）：与输入框的做法胶囊同名，不再写“运行模式：标准（推荐）· 先给我看计划”与“数据级别 L2”
+        steps.push({ key: `${e.event_id}`, level: "detail", icon: "ok", title: `做法：${p.mode in MODE_LABELS ? modeChipLabel({ mode: p.mode as RunMode, planFirst: !!p.plan_first }) : String(p.mode ?? "—")}`, at });
+        break;
+      case "materials.loaded":
+        steps.push({ key: `${e.event_id}`, level: "lawyer", icon: p.failed ? "fail" : "ok", title: Number(p.requested) === 0 ? "开始处理" : `已读完 ${p.loaded}/${p.requested} 份材料${p.failed ? `，${p.failed} 份无法读取` : ""}`, at });
+        break;
+      case "plan.created":
+        // 内核的内部步骤（“启动 Agent 宿主（独立进程，非系统沙箱）→ 执行并镜像事件 → 结算”）对律师没有信息量，还会被读成安全缺陷：
+        // 不进时间线，只留在任务事件与诊断包里（第 27 批，评审 U3-02）
+        break;
+      case "agent.tool_started": {
+        const name = String(p.tool ?? "");
+        // 进展通知只在“进展”面板显示（复核 S5B-01：上游每隔几次工具调用会催一次通知，不能每条都成为时间线步骤）
+        if (name === "AskUserQuestion" || name === "ExitPlanMode" || name === "EnterPlanMode" || name === "NotifyUser") break;
+        toolIndex.set(String(p.tool_call_id), steps.length);
+        // 联网检索与抓取：不显示 Agent 自述（可能是改写前、含当事人名称的检索式，UIUX 增量评审 P0-A）——实际发出的内容见“数据去向”
+        const network = name === "WebSearch" || name === "FetchURL";
+        // 引擎的英文自述与本机路径不给律师看（复核 S5B-12；V16 A1：此前只看“含中文”，检索式里的中文关键词让整句英文加路径漏了出来）
+        const desc = network ? undefined : lawyerToolDescription(name, p.description);
+        // 查阅方法自带的参考资料：标题写“查阅方法参考资料”，收进处理细节（V16 A1）
+        const methodRef = isMethodReference(name, p.description);
+        // 联网步骤显示实际发出的内容（改写后的查询或打开的网址），不显示改写前的检索式
+        const s = network ? sent.get(String(p.tool_call_id)) : undefined;
+        steps.push({
+          key: `${e.event_id}`,
+          // 调用方法模板这一步收进处理细节（第 26 批）：下一条“按《…》的方法处理”已经说了，不再重复一行
+          // 任务清单每更新一次就是一步（真实任务里出现 6 次）：对律师没有信息量，收进处理细节（V16）
+          level: name === "Skill" || name === "TodoList" || methodRef ? "detail" : "lawyer",
+          icon: "wait",
+          title: methodRef ? "查阅方法参考资料" : toolLabel(name),
+          at,
+          meta: network && !s ? "实际发出的内容见右侧“数据去向”" : undefined,
+          agent: p.agent_id && p.agent_id !== "main" ? String(p.agent_id) : undefined,
+          detail: s ? sentDetail(s) : desc,
+        });
+        break;
+      }
+      case "agent.tool_result": {
+        const i = toolIndex.get(String(p.tool_call_id));
+        if (i !== undefined && steps[i]) {
+          const st = steps[i]!;
+          // 联网步骤已结束却没有任何去向记录：这一步没有离开电脑（例如你拒绝了确认卡，复核 S5B-11），不再指向“数据去向”
+          const noRecord = (st.title === toolLabel("WebSearch") || st.title === toolLabel("FetchURL")) && !sent.has(String(p.tool_call_id));
+          steps[i] = { ...st, icon: p.is_error ? "fail" : "ok", ...(noRecord ? { detail: "这一步没有联网发出", meta: undefined } : {}) };
+        }
+        break;
+      }
+      case "agent.exec.queued":
+        steps.push({ key: `${e.event_id}`, level: "detail", icon: "wait", title: `本机计算排队（第 ${Number(p.position ?? 0) + 1} 位）`, at });
+        break;
+      case "agent.exec.finished":
+        steps.push({
+          key: `${e.event_id}`,
+          level: "detail",
+          icon: Number(p.exit_code ?? 0) === 0 ? "ok" : "fail",
+          // 律师话（第 26 批）：不写退出码与毫秒；退出码留在悬停里给 IT
+          title: `${Number(p.exit_code ?? 0) === 0 ? "本机计算完成" : "本机计算出错"}${p.duration_ms ? `（用时 ${Math.max(1, Math.round(Number(p.duration_ms) / 1000))} 秒）` : ""}`,
+          at,
+          detail: p.commit ? `写入 ${p.commit.written ?? 0} 个文件，删除 ${p.commit.deleted ?? 0} 个${p.commit.conflicts ? `，${p.commit.conflicts} 个与别处改动冲突` : ""}` : undefined,
+        });
+        break;
+      case "agent.approval_requested":
+        approvalIndex.set(String(p.approval_id), steps.length);
+        steps.push({ key: `${e.event_id}`, icon: "wait", level: "lawyer", title: `需要你确认：${toolLabel(String(p.tool ?? ""))}`, at });
+        break;
+      case "agent.approval_auto":
+        steps.push({ key: `${e.event_id}`, icon: "ok", level: "detail", title: "未要求先看计划，直接执行", at });
+        break;
+      case "agent.approval_decided": {
+        const i = approvalIndex.get(String(p.approval_id));
+        // 退回计划（第 29 批真实走查）：律师写了修改意见退回计划，助手会按意见重写计划——不是“跳过”
+        const plan = i !== undefined && /提交计划/.test(steps[i]?.title ?? "");
+        if (i !== undefined && steps[i]) steps[i] = { ...steps[i]!, icon: p.decision === "approve" ? "ok" : "fail" };
+        steps.push({ key: `${e.event_id}`, icon: p.decision === "approve" ? "ok" : "fail", level: "lawyer", title: p.decision === "approve" ? `你已同意${p.scope === "task" ? "（本任务内同类不再询问）" : ""}` : plan ? "你退回了计划，助手按你的意见修改" : "你没有同意，已跳过", at });
+        break;
+      }
+      case "agent.approval_expired": {
+        const i = approvalIndex.get(String(p.approval_id));
+        if (i !== undefined && steps[i]) steps[i] = { ...steps[i]!, icon: "fail" };
+        steps.push({ key: `${e.event_id}`, level: "lawyer", icon: "fail", title: "确认已超时，已跳过这一步", at });
+        break;
+      }
+      case "agent.subagent":
+        // 子任务起止：进展面板里逐项显示；时间线只在没有完成时提醒律师
+        if (p.event === "failed") steps.push({ key: `${e.event_id}`, level: "lawyer", icon: "fail", title: "有一个子任务没有完成，主任务会继续", at });
+        else steps.push({ key: `${e.event_id}`, level: "detail", icon: p.event === "spawned" ? "wait" : "ok", title: p.event === "spawned" ? "开始一个子任务" : `子任务${p.event === "done" ? "完成" : p.event === "cancelled" ? "已停止" : "暂停"}`, at });
+        break;
+      case "agent.compaction":
+        steps.push(
+          p.event === "failed"
+            ? { key: `${e.event_id}`, level: "lawyer", icon: "fail", title: "对话过长，助手暂停整理。请把任务拆小，或新开一个任务继续。", at }
+            : { key: `${e.event_id}`, level: p.event === "completed" ? "lawyer" : "detail", icon: "ok", title: p.event === "completed" ? `对话较长，助手已把前面的内容整理成摘要继续工作（第 ${p.count ?? 1} 次）` : "上下文整理已取消", at, detail: p.event === "completed" ? "材料原文仍在，结论请以引用的原文为准。" : undefined },
+        );
+        break;
+      case "agent.skill":
+        steps.push({ key: `${e.event_id}`, level: "lawyer", icon: "ok", title: `按《${methodName(skillTitles[String(p.skill)] ?? String(p.skill))}》的方法处理`, at });
+        break;
+      case "agent.question":
+        questionIndex.set(String(p.question_id), steps.length);
+        steps.push({ key: `${e.event_id}`, level: "lawyer", icon: "wait", title: "需要你定一下", at });
+        break;
+      case "agent.question_answered": {
+        const i = questionIndex.get(String(p.question_id));
+        if (i !== undefined && steps[i]) steps[i] = { ...steps[i]!, icon: "ok" };
+        steps.push({ key: `${e.event_id}`, level: "lawyer", icon: "ok", title: "已回答", at });
+        break;
+      }
+      case "agent.workspace_skipped":
+      case "agent.workspace_rejected": {
+        const files = Array.isArray(p.files) ? p.files : [];
+        steps.push({
+          key: `${e.event_id}`,
+          level: "lawyer",
+          icon: "dot",
+          title: `${files.length} 个文件没有放进成果${e.type === "agent.workspace_rejected" ? "（含外部链接，已拦下）" : ""}`,
+          at,
+          detail: files.map((f: any) => `${f.path ?? f.filename}${SKIP_REASONS[f.reason] ? `（${SKIP_REASONS[f.reason]}）` : ""}`).join("、"),
+        });
+        break;
+      }
+      // 独立复核（V13 第 38 批）：文书交出后由内核另起一次不带起草上下文的复核，意见交回助手逐条处理
+      case "review.started":
+        steps.push({ key: `${e.event_id}`, level: "lawyer", icon: "wait", title: "独立复核：另一位“复核人”只看委托、材料和交出的文书，逐项复核", at });
+        break;
+      case "review.completed": {
+        const n = Number(p.findings ?? 0);
+        const must = Number(p.must ?? 0);
+        steps.push({ key: `${e.event_id}`, level: "lawyer", icon: "ok", title: n > 0 ? `独立复核提出 ${n} 条意见（其中必须改 ${must} 条），已交回助手处理` : "独立复核未发现实质问题", at, detail: n > 0 ? "意见见成果《独立复核意见》；处理结果见最终答复的“独立复核处理情况”" : undefined });
+        break;
+      }
+      // V18 第 43 批：复核调用失败先自动重试一次
+      case "review.retried":
+        steps.push({ key: `${e.event_id}`, level: "detail", icon: "wait", title: "独立复核没有连上，正在重试一次", at, detail: typeof p.error === "string" ? p.error : undefined });
+        break;
+      case "review.skipped":
+        steps.push({ key: `${e.event_id}`, level: "lawyer", icon: "fail", title: p.reason === "no_session" ? "独立复核意见没能交回助手修改，请按《独立复核意见》核对" : "独立复核没有完成（已重试），这一稿未经独立复核", at, detail: typeof p.error === "string" ? p.error : undefined });
+        break;
+      // V18 第 43 批：修改之后，复核人只对照最新版文件核对“必须改”的意见是否落到了文件里
+      case "review.followup": {
+        const open = Array.isArray(p.open) ? (p.open as unknown[]).map(Number).filter((n) => Number.isFinite(n)) : [];
+        const unknown = Array.isArray(p.unknown) ? (p.unknown as unknown[]).length : 0;
+        if (p.failed === true) steps.push({ key: `${e.event_id}`, level: "detail", icon: "fail", title: "修改结果没有核对成，请对照《独立复核意见》自行核对", at, detail: typeof p.error === "string" ? p.error : undefined });
+        else if (open.length > 0) steps.push({ key: `${e.event_id}`, level: "lawyer", icon: "fail", title: `复核人回看：必须改的意见里，第 ${open.join("、")} 条没有落实到文件`, at, detail: "详见成果《独立复核意见》末尾的“回看”一节" });
+        else steps.push({ key: `${e.event_id}`, level: "lawyer", icon: "ok", title: unknown > 0 ? `复核人回看：必须改的意见有 ${unknown} 条没有核对出结论` : "复核人回看：必须改的意见都已处理", at });
+        break;
+      }
+      // V16 第 41 批（偏离 D-178）：审查与出建议修订稿分两段，各有各的时限
+      case "redline.started":
+        steps.push({ key: `${e.event_id}`, level: "lawyer", icon: "wait", title: "审查已交出，助手接着在原件上写建议修订稿", at });
+        break;
+      case "redline.outcome":
+        steps.push(
+          (p.status === "succeeded" || p.status === "partial") && Number(p.files ?? 0) > 0
+            ? { key: `${e.event_id}`, level: "lawyer", icon: p.status === "succeeded" ? "ok" : "dot", title: p.status === "succeeded" ? "建议修订稿已生成" : "建议修订稿已生成，核对没有全部做完", at }
+            : { key: `${e.event_id}`, level: "lawyer", icon: "fail", title: p.status === "timed_out" ? "写建议修订稿超过时限，审查成果不受影响" : "建议修订稿没有做出来，审查成果不受影响", at, detail: "可以在审查工作台逐条处理后点“生成修订稿”" },
+        );
+        break;
+      case "redline.skipped":
+        if (p.reason === "no_session") steps.push({ key: `${e.event_id}`, level: "lawyer", icon: "fail", title: "建议修订稿没有做出来，审查成果不受影响", at, detail: "可以在审查工作台逐条处理后点“生成修订稿”" });
+        break;
+      case "review.fix_started":
+        steps.push({ key: `${e.event_id}`, level: "lawyer", icon: "wait", title: "助手按复核意见逐条核对、修改", at });
+        break;
+      case "review.fix_outcome":
+        steps.push(
+          // V16 第 41 批：有必须改的意见、修改轮正常结束却没改动任何文书或表格（revised 为 0）——如实提示律师核对，不写“已处理完”
+          p.status === "succeeded" && Number(p.must ?? 0) > 0 && p.revised !== undefined && Number(p.revised) === 0
+            ? { key: `${e.event_id}`, level: "lawyer", icon: "dot", title: `独立复核提出 ${Number(p.must)} 条必须改的意见，修改轮没有改动任何文书或表格`, at, detail: "处理理由见最终答复的“独立复核处理情况”，请对照《独立复核意见》核对" }
+            : p.status === "succeeded"
+            ? { key: `${e.event_id}`, level: "lawyer", icon: "ok", title: "复核意见已处理完", at }
+            : { key: `${e.event_id}`, level: "lawyer", icon: "fail", title: p.status === "timed_out" ? "按复核意见修改超过时限，文书是复核前的版本" : "按复核意见修改没有完成，文书是复核前的版本", at },
+        );
+        break;
+      case "run.earlier_superseded": {
+        // 重新运行从头再做（第 44 批）：上一次运行的文件收起、不算这一次的成果；上一次确认的论点作废。
+        // 不是问题，用 ok 图标（“没做完的地方”只收 fail / dot）
+        const n = Number(p.count ?? 0);
+        const kept = Array.isArray(p.kept) ? p.kept.length : 0;
+        const outlines = Number(p.outlines ?? 0);
+        const parts = [
+          n > 0 ? `上一次运行的 ${n} 份文件收进“上一次运行的文件”，不算这次的成果，也不交给复核` : "",
+          outlines > 0 ? "上一次确认的论点与依据不再沿用，这次起草前会重新请你确认" : "",
+          kept > 0 ? `你已提交复核或签发的 ${kept} 份保留不动` : "",
+        ].filter(Boolean);
+        steps.push({ key: `${e.event_id}`, level: "lawyer", icon: "ok", title: "重新运行：按这一次的回答和计划重新做", at, ...(parts.length > 0 ? { detail: parts.join("；") } : {}) });
+        break;
+      }
+      case "agent.primary_missing":
+        // 主交付物核对（第 28 批）：文书类方法没交出 Word 文书——如实告诉律师，任务记部分完成
+        steps.push({ key: `${e.event_id}`, level: "lawyer", icon: "fail", title: `没有交出《${String(p.primary ?? "文书")}》`, at, detail: PRIMARY_MISSING_CAUSES[String(p.cause)] ?? "" });
+        break;
+      case "agent.deadline_delivered": {
+        // 到工作时限时文书已交出（第 35 批）：如实说“文书已交出、收尾没完成”，任务记部分完成，不让律师以为什么都没有
+        const files = Array.isArray(p.files) ? p.files.map(String) : [];
+        steps.push({ key: `${e.event_id}`, level: "lawyer", icon: "dot", title: `到工作时限时已交出 ${files.length} 份文件，收尾没有完成`, at, detail: files.join("、") });
+        break;
+      }
+      case "agent.error":
+        // 律师层只给一句可理解的说明（不显示英文错误与状态码）；原文进“处理细节”（UIUX 增量评审 P0-D）。
+        // retryable 由内核保留（复核 B4-B21：此前被裁掉，“正在自动重试”永远不出现）
+        // 模型通道不可达（provider.*，第 28 批演练）：直说 AI 服务连不上，不写“任务会尽量继续”
+        steps.push({ key: `${e.event_id}-l`, level: "lawyer", icon: "fail", title: p.retryable === true ? "AI 服务出了点问题，正在自动重试" : String(p.code ?? "").startsWith("provider.") ? (OWN_QUOTA_RE.test(String(p.message ?? "")) ? "AI 额度暂时用到限制，这一步暂停" : QUOTA_RE.test(String(p.message ?? "")) ? "AI 服务账户的余额或额度不足，这一步没有完成" : "AI 服务连不上，这一步没有完成") : "这一步没有完成，任务会尽量继续", at });
+        // V16（审计第 8 条）：处理细节里只写出错代码，原始错误原文（常为英文）只进诊断信息
+        // 第 46 批：执行页上不再出现“出错代码 provider.xxx”这类研发字样——写“出错详情已记录”，代码只进诊断信息
+        steps.push({ key: `${e.event_id}`, level: "detail", icon: "fail", title: "出错详情已记录", at, detail: "需要时可在 设置 → 备份与安全 导出诊断信息交给客服" });
+        break;
+      case "agent.cancel_unconfirmed":
+        // 停止请求与强制停止都没有得到本机助手的确认（复核 B4-B07：原文案“已强制停止”与事实相反）
+        steps.push({ key: `${e.event_id}`, level: "lawyer", icon: "fail", title: CANCEL_UNCONFIRMED_TEXT, at });
+        if (p.error || p.cause) steps.push({ key: `${e.event_id}-d`, level: "detail", icon: "fail", title: "停止请求的处理详情", at, detail: [p.cause ? `原因：${cancelCauseLabel(String(p.cause))}` : "", p.error ? String(p.error) : ""].filter(Boolean).join("；") });
+        break;
+      case "agent.cancel_forced":
+        steps.push({ key: `${e.event_id}`, level: "detail", icon: "ok", title: "已停止", at, detail: `原因：${cancelCauseLabel(String(p.cause ?? ""))}` });
+        break;
+      case "citations.verified":
+        steps.push({ key: `${e.event_id}`, icon: Number(p.intercepted) > 0 ? "fail" : "ok", level: "lawyer", title: Number(p.intercepted) > 0 ? `核对引用：${p.total} 条中 ${p.intercepted} 条有问题，已标出` : `核对引用：${p.total} 条均已核对`, at });
+        break;
+      case "model.completed":
+        steps.push({ key: `${e.event_id}`, level: "detail", icon: "ok", title: "AI 分析完成", at });
+        break;
+      case "artifact.drafted":
+        steps.push({ key: `${e.event_id}`, icon: "ok", level: "lawyer", title: `草稿已生成：${p.kind === "a1_workspace_file" ? p.filename : ARTIFACT_LABELS[p.kind] ?? p.filename ?? "成果"}（待复核）`, at });
+        break;
+      case "agent.outcome":
+        // 原因码转中文（复核 B4-B23：不直接显示英文原因码）
+        steps.push({ key: `${e.event_id}`, icon: p.status === "succeeded" ? "ok" : p.status === "partial" ? "dot" : "fail", level: "detail", title: `助手结束：${RUN_STATUS_LABELS[String(p.status)] ?? p.status}${p.reason ? `（${outcomeReasonLabel(String(p.reason))}）` : ""}`, at });
+        break;
+      case "run.succeeded":
+      case "run.partial":
+      case "run.failed":
+      case "run.cancelled":
+      case "run.timed_out":
+      case "run.expired":
+      case "run.reconciling":
+        steps.push({
+          key: `${e.event_id}`,
+          level: "lawyer",
+          icon: e.type === "run.succeeded" ? "ok" : e.type === "run.partial" ? "dot" : "fail",
+          title: RUN_STATUS_LABELS[e.type.slice(4)] ?? e.type,
+          at,
+          // 超时、过期同样写明原因与下一步（第 29 批上游不回应演练：原先只显示“已超时”）
+          detail: e.type === "run.failed" || e.type === "run.timed_out" || e.type === "run.expired" ? String(p.error ?? p.reason ?? "") : undefined,
+        });
+        break;
+      default:
+        break;
+    }
+  }
+  return steps;
+}
+
+/** 停止请求没有得到确认时律师看到的一句话（复核 B4-B07）。 */
+export const CANCEL_UNCONFIRMED_TEXT = "没能确认任务已停下，它可能仍在运行；请关闭 Kimi Work 再重新打开";
+
+const CANCEL_CAUSE_LABELS: Record<string, string> = {
+  version_conflict: "停止时恰好有新的确认或提问到达",
+  timeout: "本机助手没有及时响应",
+  forbidden: "本机助手记录的发起人与当前不一致",
+  not_found: "本机助手找不到这个任务",
+  host_exited: "本机助手已退出",
+  error: "停止请求出错",
+};
+
+/** 停止请求未按版本生效的原因（中文）。 */
+export function cancelCauseLabel(cause: string): string {
+  return CANCEL_CAUSE_LABELS[cause] ?? (cause ? "其他原因" : "原因未知");
+}
+
+/** 助手结束原因（resolveAgentOutcome 与宿主收尾原因）→ 中文；未登记的原因码不直接显示英文。 */
+const OUTCOME_REASON_LABELS: Record<string, string> = {
+  cancelled: "已取消",
+  timed_out: "超过时限",
+  expired: "已过期",
+  host_reported_failure: "助手报告失败",
+  missing_completion_record: "没有收到完成记录",
+  unknown_status: "状态无法识别",
+  exit_code_mismatch: "退出状态与报告不一致",
+  artifact_hash_mismatch: "成果校验不一致",
+  content_filtered: "AI 服务拒绝处理这段内容",
+  length_truncated: "回答在长度上限处被截断",
+  host_reported_partial: "助手声明部分完成",
+  turn_not_completed: "这一轮没有正常结束",
+  missing_artifact: "没有产出可交付的内容",
+  finish_reason_unknown: "AI 中途停止，原因不明，可以重新运行",
+  finish_reason_unreported: "AI 中途停止，原因不明，可以重新运行",
+  workspace_commit_incomplete: "部分文件没有写入工作区",
+  run_deadline_exceeded: "超过工作时限",
+  run_wall_deadline_exceeded: "超过总时长上限",
+  prompt_rejected: "助手没能接这个任务，请换个说法再试",
+  host_exited: "处理意外中断，可以重新运行",
+  start_failed: "启动失败",
+  unknown_task: "任务不存在",
+};
+
+export function outcomeReasonLabel(reason: string): string {
+  if (OUTCOME_REASON_LABELS[reason]) return OUTCOME_REASON_LABELS[reason]!;
+  // 宿主取消时的原因是人写的中文（例如“用户取消”）；英文原因码一律不直接显示
+  return /^[\x00-\x7f]*$/.test(reason) ? "其他原因" : reason.slice(0, 40);
+}
+
+/**
+ * 沿用的成果（第 27 批，走查 W-5）：这次产出与本事项之前某次任务的成果逐字相同时，内核不再登记新版本，只记一条 artifact.reused。
+ * 执行页据此说明“结果与之前那次相同，沿用那份文件”并给出入口，不再显示“成果 0、没有生成文件”。同一份文件只列一次。纯函数。
+ */
+export function reusedArtifacts(events: readonly RunEvent[]): { artifact_version_id: string; first_run_id: string | null }[] {
+  const seen = new Set<string>();
+  const out: { artifact_version_id: string; first_run_id: string | null }[] = [];
+  for (const e of events) {
+    if (e.type !== "artifact.reused") continue;
+    const id = String(e.payload?.artifact_version_id ?? "");
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ artifact_version_id: id, first_run_id: e.payload?.first_run_id ? String(e.payload.first_run_id) : null });
+  }
+  return out;
+}

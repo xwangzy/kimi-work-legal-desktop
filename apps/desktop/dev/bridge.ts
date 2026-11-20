@@ -1,0 +1,123 @@
+/**
+ * Web 开发桥（仅开发模式）：浏览器调试时 Electron IPC 不可用，
+ * 以最小 HTTP 包装内核 invoke（POST /invoke {method, params}）；GET /events 以逐行 JSON 推送问答的部分回答（chat.delta，与主进程转发的同一形状）。
+ * 生产形态是 Electron utilityProcess IPC；本桥不进生产包。
+ *
+ * 只接受来自本机 vite 开发页（127.0.0.1:5173 / localhost:5173）且带开发桥令牌的请求（W1：审批、还原等接口在开发形态同样不能被其他网页调用）。
+ */
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { createServer } from "node:http";
+import { fileURLToPath } from "node:url";
+import { createKernel } from "@zr-legal/kernel";
+import { bridgeToken } from "./bridge-token.ts";
+
+// 起内核前按源文件重建方法模板包与工具清单锁（第 28 批；约 1 秒）：浏览器联调用的始终是当前源文件，不会带着旧包跑
+const contentRoot = fileURLToPath(new URL("../../../", import.meta.url));
+if (existsSync(`${contentRoot}content/keys/content-signing-dev.json`)) {
+  for (const s of ["content/skills/build-skills.mjs", "content/tool-manifest/build-lock.mjs"]) execFileSync(process.execPath, [`${contentRoot}${s}`], { stdio: "inherit", cwd: contentRoot });
+}
+
+const PORT = Number(process.env.ZR_DEV_BRIDGE_PORT ?? 7720);
+let kernel = await createKernel();
+console.log(`[bridge] kernel up, localPort=${kernel.localPort}, workspace=${kernel.config.workspaceDir}`);
+// 开通或入组完成（第 13 批）：与安装包主进程一样按 activation.json 重建内核；重建期间的请求等它就绪
+let ready: Promise<void> = Promise.resolve();
+const eventClients = new Set<import("node:http").ServerResponse>();
+const watchIdentity = (k: typeof kernel) =>
+  k.onBroadcast((m) => {
+    if (m.type === "chat.delta" && typeof m.stream_id === "string" && typeof m.text === "string") {
+      const line = `${JSON.stringify({ type: "chat.delta", stream_id: m.stream_id, text: m.text })}\n`;
+      for (const c of eventClients) c.write(line);
+      return;
+    }
+    // 回答进度（第 48 批）：与主进程同一形状，只带流编号、阶段与思考字数
+    if (m.type === "chat.progress" && typeof m.stream_id === "string" && (m.phase === "thinking" || m.phase === "writing") && Number.isSafeInteger(m.thought_chars) && (m.thought_chars as number) >= 0) {
+      const line = `${JSON.stringify({ type: "chat.progress", stream_id: m.stream_id, phase: m.phase, thought_chars: m.thought_chars })}\n`;
+      for (const c of eventClients) c.write(line);
+      return;
+    }
+    // 登录已失效（第 44 批）：与主进程同一形状，只带原因代码
+    if (m.type === "account.login_required" && typeof m.reason === "string" && /^[a-z_]{1,40}$/.test(m.reason)) {
+      const line = `${JSON.stringify({ type: "account.login_required", reason: m.reason })}\n`;
+      for (const c of eventClients) c.write(line);
+      return;
+    }
+    // 从备份恢复（第 14 批）：开发形态没有 DPAPI，直接以恢复的主密钥重建内核（只在待激活模式）
+    if (m.type === "kernel.adopt_master_key" && k.config.onboarding && typeof m.key === "string") process.env.ZR_DB_KEY = m.key;
+    else if (m.type !== "kernel.restart_for_identity") return;
+    ready = (async () => {
+      await k.close().catch(() => {});
+      kernel = await createKernel();
+      watchIdentity(kernel);
+      console.log(`[bridge] kernel restarted for identity, workspace=${kernel.config.workspaceDir}`);
+    })();
+  });
+watchIdentity(kernel);
+
+// 令牌：先到者随机生成并写入 dev/.bridge-token（vite 读取后注入开发页）；ZR_DEV_BRIDGE_TOKEN 可覆盖
+const BRIDGE_TOKEN = bridgeToken();
+const WEB_PORT = Number(process.env.KWL_DEV_WEB_PORT ?? 5173);
+const ALLOWED_ORIGINS = new Set([`http://127.0.0.1:${WEB_PORT}`, `http://localhost:${WEB_PORT}`]);
+
+const server = createServer((req, res) => {
+  const origin = String(req.headers.origin ?? "");
+  if (!ALLOWED_ORIGINS.has(origin)) {
+    res.writeHead(403, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ ok: false, error: { code: "forbidden", message: "开发桥只接受本机开发页的请求" } }));
+  }
+  res.setHeader("access-control-allow-origin", origin);
+  res.setHeader("vary", "origin");
+  res.setHeader("access-control-allow-methods", "GET,POST,OPTIONS");
+  res.setHeader("access-control-allow-headers", "content-type,x-kwl-token");
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    return res.end();
+  }
+  const isEvents = req.method === "GET" && req.url === "/events";
+  if (!isEvents && (req.method !== "POST" || req.url !== "/invoke")) {
+    res.writeHead(404);
+    return res.end();
+  }
+  if (req.headers["x-kwl-token"] !== BRIDGE_TOKEN) {
+    res.writeHead(401, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ ok: false, error: { code: "forbidden", message: "开发桥令牌不符" } }));
+  }
+  if (isEvents) {
+    res.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" });
+    res.flushHeaders();
+    eventClients.add(res);
+    req.on("close", () => eventClients.delete(res));
+    return;
+  }
+  void (async () => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    let body: any = {};
+    try {
+      body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+    } catch {
+      // 保持 {}
+    }
+    try {
+      await ready;
+      const result = await kernel.invoke(String(body.method), body.params ?? {});
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ ok: true, result }));
+    } catch (e) {
+      const err = e as any;
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ ok: false, error: { code: err?.code ?? "internal", message: err?.message ?? String(e), detail: err?.detail } }));
+    }
+  })();
+});
+
+server.listen(PORT, "127.0.0.1", () => {
+  console.log(`[bridge] dev bridge listening on http://127.0.0.1:${PORT}/invoke`);
+});
+
+for (const sig of ["SIGINT", "SIGTERM"] as const) {
+  process.on(sig, () => {
+    void kernel.close().then(() => process.exit(0));
+  });
+}
