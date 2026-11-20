@@ -4,7 +4,7 @@
   "api": "kwl-cp/2",
   "monorepo": {
     "path": "platform/",
-    "commit": "737e036d62f5334802a89122aaa4717524bdbac1",
+    "commit": "7f63149597f182ce2272d81d376b5775fda77986",
     "dirty": false
   },
   "shared_contract_packages": [
@@ -82,7 +82,8 @@
     "packages/model-broker/test/route-limits.test.ts": "引用了未导出的文件 ../../../services/legal-gateway/src/gateway.ts"
   },
   "files": {
-    ".github/workflows/desktop-ci.yml": "4b498616b5a2699bbf6b7bfb8b10a63027ef3588d040c6da5426b7c8b112bb41",
+    ".gitattributes": "1309c620e43001ac690b3edf1aceca1ff5b43bed2d83e53aa4ceed573d830652",
+    ".github/workflows/desktop-ci.yml": "a7a837c8090df01278e8c6b1e858920b56730ae099f529f2ba7486f595220e7b",
     ".gitignore": "7568ea4b010a406f2af50be7034335f3d3397f1cd3e919a4a0bae297b631eb7f",
     ".nvmrc": "50b8995029fdebc8ca439031c6945518d38ab6ad38a3985c9ba386bfafebcb35",
     "apps/desktop/build/brand/Logomark_Light.svg": "a543446e0c6827bae262ec45e6bbc67cc0c9e9f446ebc86be916c082459aed25",
