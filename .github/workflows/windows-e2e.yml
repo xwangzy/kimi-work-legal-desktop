@@ -153,9 +153,9 @@ jobs:
         env:
           KWL_FIRM_CODE: ${{ inputs.firm_code }}
         run: node scripts/e2e/ui.mjs await-approval "${{ inputs.approval_wait_min }}"
-      # 第 54 批真实走查：作业被取消时后面的上传步骤可能来不及跑——批准后立即留现场截图与本机日志（只含登记过的事件码与类型化字段）并上传
+      # 第 54 批真实走查：作业被取消时后面的上传步骤可能来不及跑；收尾步骤只在装上了程序（KWL_APP 已设）时运行，否则取消后会各空等数分钟——批准后立即留现场截图与本机日志（只含登记过的事件码与类型化字段）并上传
       - name: 批准后现场（截图与本机日志）
-        if: always()
+        if: always() && env.KWL_APP != ''
         timeout-minutes: 5
         shell: pwsh
         run: |
@@ -185,11 +185,11 @@ jobs:
         if: inputs.run_task
         run: node scripts/e2e/ui.mjs export
       - name: 套餐与用量
-        if: always()
+        if: always() && env.KWL_APP != ''
         timeout-minutes: 5
         run: node scripts/e2e/ui.mjs usage || true
       - name: 断网演练（防火墙封住云端地址）
-        if: always()
+        if: always() && env.KWL_APP != ''
         timeout-minutes: 15
         shell: pwsh
         run: |
@@ -201,8 +201,11 @@ jobs:
           Write-Output "封锁后 TCP 8443 可达：$($t.TcpTestSucceeded)"
           node scripts/e2e/ui.mjs diagnose expect-fail
           $diag = $LASTEXITCODE
+          # 断网时问答最多等 5 分钟（闸门模型通道首字节看门狗 180 秒），不论结果都截图（第 54 批：上一轮在这里一直等到步骤超时）
+          $env:KWL_QA_TIMEOUT_MIN = "5"
           node scripts/e2e/ui.mjs qa "断网时提问：请简述合同解除的法定事由。"
           node scripts/e2e/ui.mjs shot 20-断网时问答
+          Remove-Item Env:KWL_QA_TIMEOUT_MIN
           Remove-NetFirewallRule -DisplayName "kwl-e2e-block-cloud"
           foreach ($p in $before) { Set-NetFirewallProfile -Profile $p.Name -Enabled $p.Enabled }
           $t2 = Test-NetConnection $env:KWL_CLOUD_HOST -Port 8443 -WarningAction SilentlyContinue
@@ -211,7 +214,7 @@ jobs:
           node scripts/e2e/ui.mjs diagnose expect-ok
           if ($diag -ne 0) { throw "断网时检测连接没有如实报错" }
       - name: 收集本机日志
-        if: always()
+        if: always() && env.KWL_APP != ''
         timeout-minutes: 3
         shell: pwsh
         run: |
@@ -221,7 +224,7 @@ jobs:
           Get-ChildItem $root -Recurse -Filter "kwl-*.jsonl" -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName -Destination (Join-Path $logs (($_.FullName.Substring($root.Length + 1)) -replace '[\\/]', '__')) -Force }
           exit 0
       - name: 关闭程序并核对无残留进程
-        if: always()
+        if: always() && env.KWL_APP != ''
         timeout-minutes: 5
         shell: pwsh
         run: |
@@ -232,7 +235,7 @@ jobs:
           if ($left) { $left | Format-Table Id, ProcessName, Path | Out-String | Write-Output; $left | Stop-Process -Force; Write-Output "::warning::关闭后仍有残留进程（已强制结束）" }
           Get-Process powershell -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*win-save-dialog*" } | Stop-Process -Force -ErrorAction SilentlyContinue
       - name: 静默卸载并核对清理
-        if: always()
+        if: always() && env.KWL_APP != ''
         timeout-minutes: 10
         shell: pwsh
         run: |
