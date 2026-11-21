@@ -4,7 +4,7 @@
   "api": "kwl-cp/2",
   "monorepo": {
     "path": "platform/",
-    "commit": "cdba3fb4978ec0b4a46b706c524e8b087fb6cede",
+    "commit": "bd5abc6c677374bb6ac78fa6a76ac39d45c2b3a9",
     "dirty": false
   },
   "shared_contract_packages": [
@@ -84,7 +84,7 @@
   "files": {
     ".gitattributes": "1309c620e43001ac690b3edf1aceca1ff5b43bed2d83e53aa4ceed573d830652",
     ".github/workflows/desktop-ci.yml": "a7a837c8090df01278e8c6b1e858920b56730ae099f529f2ba7486f595220e7b",
-    ".github/workflows/windows-e2e.yml": "36c303bf1ac55950929f0dccf0b3af92ac65ca6335616856479b03d783934eae",
+    ".github/workflows/windows-e2e.yml": "0832bc35bd0502ad132481a9607b1b4c2255973db2ba766e8bea566004db8d6c",
     ".gitignore": "7568ea4b010a406f2af50be7034335f3d3397f1cd3e919a4a0bae297b631eb7f",
     ".nvmrc": "50b8995029fdebc8ca439031c6945518d38ab6ad38a3985c9ba386bfafebcb35",
     "apps/desktop/build/brand/Logomark_Light.svg": "a543446e0c6827bae262ec45e6bbc67cc0c9e9f446ebc86be916c082459aed25",
@@ -1079,7 +1079,7 @@
     "scripts/e2e/cards/contract-review-D2.json": "940846add11bea0469d887eda17e3667170330cb970eef3712d4ba9ff0a858fe",
     "scripts/e2e/fixtures/D2/冷链智能分拣系统采购与实施合同（棠溪智能提供稿）.docx": "8eee6ecd95cdbaaca071d3de6549f78a8ce3057f3c6d35b66d8c9d51228e3312",
     "scripts/e2e/fixtures/D2/我方交易背景与底线.txt": "776fce4d7fe0345505692ec50e5b73e00f6ecdc1d9e5d2be25b434b1031de539",
-    "scripts/e2e/ui.mjs": "34f56d1630878b88e09a62dddd949e124b765f62d0d871a51df54a63435d8a66",
+    "scripts/e2e/ui.mjs": "862bdf21eec34444fa1ec83e63b0234bfe6875a37af64c528e03f80daa7e401f",
     "scripts/e2e/win-save-dialog.ps1": "11a2118e265a705dc78270eb55330534f17b3abe3c87da4d2ee6b03d1b0edba8",
     "scripts/endpoint-profile.mjs": "f8ca04208d10003348adddeaeab0114d6bcff7b02a5a928b5503862e0b166fd2",
     "scripts/fetch-mac-runtime.mjs": "f5863308e41205faa17b1913967521b80cb1928676bf261c9f1d232d6dbe14ec",
