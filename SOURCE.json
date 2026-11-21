@@ -4,7 +4,7 @@
   "api": "kwl-cp/2",
   "monorepo": {
     "path": "platform/",
-    "commit": "9c45fc3d4f1a26ac9f59338316ae52cafa779174",
+    "commit": "adab707aa6d246e580bd751afc871f251e704b7f",
     "dirty": false
   },
   "shared_contract_packages": [
@@ -1082,7 +1082,7 @@
     "scripts/e2e/cards/contract-review-D2.json": "940846add11bea0469d887eda17e3667170330cb970eef3712d4ba9ff0a858fe",
     "scripts/e2e/fixtures/D2/冷链智能分拣系统采购与实施合同（棠溪智能提供稿）.docx": "8eee6ecd95cdbaaca071d3de6549f78a8ce3057f3c6d35b66d8c9d51228e3312",
     "scripts/e2e/fixtures/D2/我方交易背景与底线.txt": "776fce4d7fe0345505692ec50e5b73e00f6ecdc1d9e5d2be25b434b1031de539",
-    "scripts/e2e/ui.mjs": "b42d313856cde83e6509265f7989b3d917286bbd3228606f6b4a6ed16492e044",
+    "scripts/e2e/ui.mjs": "e557aa59773e618c6e17112b06b01952c1cb0a9a8879edf2d43463b81abc34e5",
     "scripts/e2e/win-save-dialog.ps1": "e6020a7d3b3ff7f88eb93caa8604e9401be3dfa066c7b617a80dc584297255e0",
     "scripts/endpoint-profile.mjs": "f8ca04208d10003348adddeaeab0114d6bcff7b02a5a928b5503862e0b166fd2",
     "scripts/fetch-mac-runtime.mjs": "f5863308e41205faa17b1913967521b80cb1928676bf261c9f1d232d6dbe14ec",
