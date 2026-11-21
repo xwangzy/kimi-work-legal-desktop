@@ -4,8 +4,8 @@
   "api": "kwl-cp/2",
   "monorepo": {
     "path": "platform/",
-    "commit": "a640680587750f7a39b4a1006c4df8ed21dc2c87",
-    "dirty": false
+    "commit": "e96b345902ce63cb56e19e3488618a2355a4127e",
+    "dirty": true
   },
   "shared_contract_packages": [
     "firm-trust",
@@ -333,7 +333,7 @@
     "apps/desktop/vite.config.ts": "3044e9951ae59f787168813717827c9d5b811965b9e95f20ef5b889ae61566e2",
     "content/agent-profile/build-profile.mjs": "10c588fe3f83d14a314684d7f0e0dcdfe4808dec214443107e3c27b97ed9b995",
     "content/agent-profile/legal-agent.md": "de1a5db244316accf1e4532a6ea5408f77d48887ebf03cc894bdc7905d015eb0",
-    "content/dev-content-key-fingerprints.json": "090f5d332c9f8728372c21657f8b8ea0a768a2ac203fef1e86ed8bdb5360edeb",
+    "content/dev-content-key-fingerprints.json": "5ade7c143e8d0fa05844f69ddc95e19207d1d7b54ddf1f51d9821ff6eacb4587",
     "content/lawdb/build-increment-sample.mjs": "183e312c27a01f10ccd47714a29335db8348d2cdbdd72401c61ccb37707837e0",
     "content/lawdb/build-lawdb.mjs": "887eeb33e9e324c9400688e7abe4f69e7bc0b9efe8792f56aea2b3d3b87fba61",
     "content/lawdb/lib/build-util.mjs": "3a7ccb95b44a178cd109bf308bc898aa12b545696dd110c7d38bee62e3f2cd9c",
@@ -737,7 +737,7 @@
     "packages/kernel/src/services/matter-templates.ts": "df9fb311d7214942e17fdc2c781d0c4fc47b60b35e187cab6a3386cf85c89b62",
     "packages/kernel/src/services/matter-todos.ts": "ad65df86500c4dbb8b9ca6e5ecff1c3ccfd03211a568e74c6cfa96a699df4815",
     "packages/kernel/src/services/not-indexed.ts": "4df711bbe1efb14b90169166db18f9fb66fdd51537fdc2b29519e680907ace71",
-    "packages/kernel/src/services/onboarding.ts": "de134b9dac914e601b9191e9d857d83d6909a390832992befb7877647dec0d44",
+    "packages/kernel/src/services/onboarding.ts": "8af2f37d03f6adf7b5eb8f68c589121fb7e2b2a81f3126bdfd9827a050aee6b5",
     "packages/kernel/src/services/parse-pipeline.ts": "0ee825a98c0536d49e899e0ff31a0a24e9115cbdae4651d3d14ff0519cbe14f6",
     "packages/kernel/src/services/parser.ts": "0f7521d39a17c3106167418d7bd257edaebadc1092f9a5c0fbfab48f812ab706",
     "packages/kernel/src/services/pending-checks.ts": "462fbe4f33341a2a6371c0094b6b6f93a55d5bade455f907e76bce2f4e8baf7b",
@@ -833,6 +833,7 @@
     "packages/kernel/test/b50-no-fork-in-app.test.ts": "efbfc42a6864096116f9dc41e806f7239afd2a7e7471585cb9b70cd4abc41cea",
     "packages/kernel/test/b52-child-selftest.test.ts": "662405c4dd6627cef36c280631b6b9d514872f95d300cf510c25d984297769f1",
     "packages/kernel/test/b52-cloud-connection.test.ts": "56de6341d06b23d4a8f3f0bc702e94b9c9e61fddb7eea24c7b8c768c93b4c08a",
+    "packages/kernel/test/b54-pending-workspace-cleanup.test.ts": "fd1c923cbd8420964362e218c9379c0bdf0d4dec4557f55893ab9f11e562c945",
     "packages/kernel/test/backup-location.test.ts": "4a19604ec737b53b90a004ea3ace5fff6c17cb03ff5ca6f97e0b92b03df55f29",
     "packages/kernel/test/backup-purge.test.ts": "b2b262d084554f32e022381f8532483e3c2e20fa5544807d2288c60e31af4aba",
     "packages/kernel/test/backup-restore.test.ts": "d5602e29111773400d13a2b5b0e34a19a1f20d9a9dbbf61dbd156fc21f94534e",
@@ -1022,7 +1023,7 @@
     "packages/pseudonym/package.json": "1d058673d08b7ebf4ac0006e65af6ed3179e4155da969f0c3d23441a9e8c1465",
     "packages/pseudonym/src/index.ts": "9809793ad10c912c0969e5cc96e838b17bc363afb6f060f59845c984b93ab615",
     "packages/safe-log/package.json": "cec50e88bb996e5ce8e787a467f314c4d586128015dcda69d50cf09034da9f5d",
-    "packages/safe-log/src/events.ts": "8768f0807cd9c22ca3a46aefd014615c9cc18ac632646bba6ac80b2c2563cffe",
+    "packages/safe-log/src/events.ts": "8e65c9416cc9871510a5863f2641e6a368624cf34a7db0128aa1aa040a136071",
     "packages/safe-log/src/index.ts": "51996f69c68921576b50264916d8323e950dbea74cc342ffebcc727e665afed3",
     "packages/safe-log/test/log-surface.test.ts": "f05bece8d7f143f26ef934142318da183f1b7ed1f6bacfd30e2b2d688b2d7d61",
     "packages/safe-log/test/safe-log.test.ts": "d1b464127b0272da6e6c6d58b47e87ae0c7773c9639308f492c50c702b9e95eb",
