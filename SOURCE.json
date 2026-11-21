@@ -4,7 +4,7 @@
   "api": "kwl-cp/2",
   "monorepo": {
     "path": "platform/",
-    "commit": "7f63149597f182ce2272d81d376b5775fda77986",
+    "commit": "11ebd5e5661c5f3cef09b1ca0919e86bcdb57142",
     "dirty": false
   },
   "shared_contract_packages": [
