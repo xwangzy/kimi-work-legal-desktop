@@ -4,7 +4,7 @@
   "api": "kwl-cp/2",
   "monorepo": {
     "path": "platform/",
-    "commit": "bd5abc6c677374bb6ac78fa6a76ac39d45c2b3a9",
+    "commit": "c8e82734fe5787f9c2ef13338cbf6d3905e9a95c",
     "dirty": false
   },
   "shared_contract_packages": [
@@ -262,7 +262,7 @@
     "apps/desktop/test/b44-account-usage.test.ts": "732fce5240bbb784d67b358b3f06f43dfe58bad88ae2973c092828def08b5163",
     "apps/desktop/test/b44-retry-earlier.test.ts": "6956e2b5d56445af971655b399f8eaba2817a5ca7b0368d80cb0a01b17af2968",
     "apps/desktop/test/b45-kimi-home-guide.test.ts": "aaa1dcf365982a21e06d24525ea48063368406b0e9520b14cf7974017a20e97c",
-    "apps/desktop/test/b46-client-polish.test.ts": "25de0d4b095b99c52db86f96de6ea4ec8aff1644cd767937d4c4290ca806f69d",
+    "apps/desktop/test/b46-client-polish.test.ts": "ef7671804d426b3128e60d1787442bdcfdb69fc1f657434a77de6f9908db3300",
     "apps/desktop/test/b47-kimi-shell.test.ts": "44248dd36dc3493abeb0bd48a33f181ce19cf285744595299fba1723119cea2c",
     "apps/desktop/test/b48-chat-wait.test.ts": "301ece1086d5fc0a1dd1f36d233d6955bdac5b1312d1ce85a6e0520edbf674a4",
     "apps/desktop/test/b48-material-folder.test.ts": "b1fb7436f842a171191f89b19451fa28893dd97b5ccc05f088b340dc90efcbe5",
@@ -1093,7 +1093,7 @@
     "scripts/mac-nsis-shim.mjs": "7b1578f7e1bb7a9089cb8ea8e2bbbd87e33c61c7b404d2ec6500ad0ec93647fa",
     "scripts/mac-runtime.lock.json": "9f396d40aac5233babf02b8d481dc8f0666d815f8908764796726fa6bc7eaa76",
     "scripts/make-release-config.mjs": "e8e9f3a91321c5f5e1211ef7859ce0848e6a3463fcb853a2f922a6bbdeb8b8e5",
-    "scripts/package-desktop.mjs": "4e02142ea493dcd52fda5c95a8fb30b6aaa3b338079bca929012a41dd5d49ed0",
+    "scripts/package-desktop.mjs": "faf990b565e5cae329072020a77ce0767f2fa3334d9f98e09ca64492a1e50a6d",
     "scripts/run-tests-watchdog.mjs": "a68770798ab9ac9854877491e1251a14f627daece2e2f342650b55da7547cf9c",
     "scripts/sign-update.mjs": "12c13aece58e2c238a6f702cb61dacdb700587ec140e3c62e5f554021fbafd5e",
     "scripts/stubs/google-auth-library.mjs": "f643f31edd8335e1ca170ec04fcb0cf476b41befddb42fa99fd7f15ccaa6fff9",
