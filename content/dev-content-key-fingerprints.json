@@ -5,10 +5,6 @@
       "fp": "6f9fabd9f765b004978e295a2fc27e28d9d2125fca3c0566ac9f0aa4e80dfd44",
       "added": "2026-10-20",
       "note": "主开发机开发密钥（2026-10-02 生成；各 worktree 共用）"
-    },
-    {
-      "fp": "4484e256a2ea77b9d14ec8fa1cb13cafb8521572e28bc17a09f3ba1511f835cd",
-      "added": "2026-11-21"
     }
   ]
 }
