@@ -4,7 +4,7 @@
   "api": "kwl-cp/2",
   "monorepo": {
     "path": "platform/",
-    "commit": "80cb658a19c60e4e4dd04598112c1f5bb675de45",
+    "commit": "61ea9e4e4ce9c4cb26dff96f194ca4e6b71967bd",
     "dirty": false
   },
   "shared_contract_packages": [
@@ -84,7 +84,7 @@
   "files": {
     ".gitattributes": "1309c620e43001ac690b3edf1aceca1ff5b43bed2d83e53aa4ceed573d830652",
     ".github/workflows/desktop-ci.yml": "a7a837c8090df01278e8c6b1e858920b56730ae099f529f2ba7486f595220e7b",
-    ".github/workflows/windows-e2e.yml": "b93c5629b8fdd9dbb08dd16bf3979d599bf90ab88f840915397f28cde221d5dc",
+    ".github/workflows/windows-e2e.yml": "19cc4aad1e2048f1fc102ee1134b245a52600b5eb70c82e8b027c0f007e3c6ed",
     ".gitignore": "7568ea4b010a406f2af50be7034335f3d3397f1cd3e919a4a0bae297b631eb7f",
     ".nvmrc": "50b8995029fdebc8ca439031c6945518d38ab6ad38a3985c9ba386bfafebcb35",
     "apps/desktop/build/brand/Logomark_Light.svg": "a543446e0c6827bae262ec45e6bbc67cc0c9e9f446ebc86be916c082459aed25",
@@ -1082,8 +1082,8 @@
     "scripts/e2e/cards/contract-review-D2.json": "940846add11bea0469d887eda17e3667170330cb970eef3712d4ba9ff0a858fe",
     "scripts/e2e/fixtures/D2/冷链智能分拣系统采购与实施合同（棠溪智能提供稿）.docx": "8eee6ecd95cdbaaca071d3de6549f78a8ce3057f3c6d35b66d8c9d51228e3312",
     "scripts/e2e/fixtures/D2/我方交易背景与底线.txt": "776fce4d7fe0345505692ec50e5b73e00f6ecdc1d9e5d2be25b434b1031de539",
-    "scripts/e2e/ui.mjs": "44f14cd728bb115ca65a24e98943b4248c74d701afce7466a22fa7611693d187",
-    "scripts/e2e/win-save-dialog.ps1": "6223053a2798a6cae649ba5494b8df3ea2b81f2b34c7def2b364999c0b0abcd0",
+    "scripts/e2e/ui.mjs": "21b31ad7cd11abfa6fbac0bfe2db7367a3ffa4358d74aeb0b991ab370bf9bc29",
+    "scripts/e2e/win-save-dialog.ps1": "e6020a7d3b3ff7f88eb93caa8604e9401be3dfa066c7b617a80dc584297255e0",
     "scripts/endpoint-profile.mjs": "f8ca04208d10003348adddeaeab0114d6bcff7b02a5a928b5503862e0b166fd2",
     "scripts/fetch-mac-runtime.mjs": "f5863308e41205faa17b1913967521b80cb1928676bf261c9f1d232d6dbe14ec",
     "scripts/fetch-ocr-models.mjs": "fa403f062ac3b4e3aec5b9da1b8cbeab75bbfb04ac6f6be9f4c1774cae4cdec6",
