@@ -225,6 +225,14 @@ async function awaitApproval(minutes = 45) {
     if (firm.replace(/\s+/g, "") !== want) throw new Error(`本所识别码与管理员电脑上的不一致（${firm}）：按产品要求停止`);
     log("本所识别码与管理员电脑逐位一致");
   }
+  // 新电脑入组后要等首次同步取得席位令牌才能发起任务（第 54 批 Windows 运行 44918571693：入组约 20 秒就发起，开始前确认提示
+  // “席位令牌未取得或已失效（联网后自动续期）……补齐后才能发起”）；等到取得为止并记下用了多久
+  const seatT0 = Date.now();
+  await until(async () => {
+    const r = await inv("control_plane.status", {});
+    return r.ok && r.result?.seat?.has_token ? r.result : null;
+  }, 5 * 60000, 2000, "席位令牌");
+  log(`席位令牌已取得（入组进入后约 ${Math.round((Date.now() - seatT0) / 1000)} 秒）`);
   await sleep(3000);
   await go("#/");
   await sleep(2000);
@@ -268,7 +276,9 @@ async function qa(question) {
       const i = t.lastIndexOf(question);
       const after = i < 0 ? "" : t.slice(i + question.length).replace(/\s+/g, "");
       const busy = await page.locator('button[aria-label="发送"]').isDisabled().catch(() => true);
-      const waiting = /正在思考|正在回答|正在写|已用时/.test(t.slice(-400));
+      // 回答还在生成：回答框带 aria-busy（流式正文很长时“正在撰写… 已用时”在正文上方，只看结尾会误判写完）
+      const streaming = (await page.locator('main [aria-busy="true"]').count()) > 0;
+      const waiting = streaming || /正在思考|正在回答|正在写|已用时/.test(t);
       return after.length > 20 && !waiting && (!busy || !(await ta.inputValue()));
     },
     Number(process.env.KWL_QA_TIMEOUT_MIN || 15) * 60000,
