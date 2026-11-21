@@ -4,7 +4,7 @@
   "api": "kwl-cp/2",
   "monorepo": {
     "path": "platform/",
-    "commit": "61cd1f4a8fd4b88c34c774b4069f3ffff82370aa",
+    "commit": "a640680587750f7a39b4a1006c4df8ed21dc2c87",
     "dirty": false
   },
   "shared_contract_packages": [
@@ -84,7 +84,7 @@
   "files": {
     ".gitattributes": "1309c620e43001ac690b3edf1aceca1ff5b43bed2d83e53aa4ceed573d830652",
     ".github/workflows/desktop-ci.yml": "a7a837c8090df01278e8c6b1e858920b56730ae099f529f2ba7486f595220e7b",
-    ".github/workflows/windows-e2e.yml": "33d86d6ea833fd6b641292f1fa28e708db96afd2b217543d79dc5e4667561b88",
+    ".github/workflows/windows-e2e.yml": "47b5f596d85d7ff9b07a69b53d7e8d7cca306df07c7bdcd88fefa2bcf69ad1a2",
     ".gitignore": "7568ea4b010a406f2af50be7034335f3d3397f1cd3e919a4a0bae297b631eb7f",
     ".nvmrc": "50b8995029fdebc8ca439031c6945518d38ab6ad38a3985c9ba386bfafebcb35",
     "apps/desktop/build/brand/Logomark_Light.svg": "a543446e0c6827bae262ec45e6bbc67cc0c9e9f446ebc86be916c082459aed25",
@@ -99,9 +99,9 @@
     "apps/desktop/electron/app-protocol.cjs": "c931ab2c53a5062c7f23f7b4c023bcc9b88eafa0d2e7c719aef803bc97b99dce",
     "apps/desktop/electron/file-dialogs.cjs": "b82dae8d6325d124885f954a6abc8c1ec0a090d2d20605955d3d68c57cbf1767",
     "apps/desktop/electron/identity-restart.cjs": "922b8330f2db465032abd40a8ecb71f70409f13db7629bd47ba069d59216fe02",
-    "apps/desktop/electron/main.cjs": "dd692fdc17a40e9b217343459aeb5a4bd8ab7339fa20ffb2d6a4b5cad9511bb8",
+    "apps/desktop/electron/main.cjs": "28567caa4033ec1ef464cf0fbd19d4868ccd63892c6d95d63df539d222bfb5dd",
     "apps/desktop/electron/preload.cjs": "e91d79c775e6506cd7252938084f4aceb1feb3e5b6a457a9b06b74b14f3f8dab",
-    "apps/desktop/electron/release-config.cjs": "674e19a88d7afe73837186281a31f2e6ba392e114f288838097ee8e670d998cc",
+    "apps/desktop/electron/release-config.cjs": "12055b10b743c6a9d49c95eebcc22c63b2ec8aa5d9cc64acdc5b036d369fc4b2",
     "apps/desktop/electron/release.example.json": "a4b0e9a1639800323fab68e03c85d46b43513ef69bf457f649682671975f0609",
     "apps/desktop/electron/runtime-paths.cjs": "479aa20463572d696d21e3c34445e38176bb52b874514bd09273e0efb5d1c49b",
     "apps/desktop/electron/secret-store.cjs": "458441ba26ac7cd3009177aed90d5057f72834ee30b6bd34cddea7cff5bf9876",
@@ -270,6 +270,7 @@
     "apps/desktop/test/b49-reminders.test.ts": "365e43cc585a8b02b7b9d8d46cc111944f1cfdbc9071620d052b2a01437585b8",
     "apps/desktop/test/b49-ui.test.ts": "9a5ec0ab65dd08b897e2ae65dbf37eabb0ab0139dc877b8a328de95f2e01669c",
     "apps/desktop/test/b52-connection-check.test.ts": "1906e50aba892fd63c8652f9caa8aa6c0d72e2ecbea5569ca082c28b1df3e79e",
+    "apps/desktop/test/b54-kernel-diag-log.test.ts": "64b336c50f0f21614b82e91f6c868e5aba9cea4eae45519ae433eaafa96a4f33",
     "apps/desktop/test/b54-members-tampered-reject.test.ts": "23b5482c8fae554b8bb54fd0dd455bc8cae06830f9cf229f3e5c5ff87666cd5d",
     "apps/desktop/test/batch10-lib.test.ts": "31964ae9f7131f947acb9ece8313385bd78ac9d782e88a6140d9628a94beaa84",
     "apps/desktop/test/batch11-lib.test.ts": "00750e3639acbdfd48bc8b9a7b10280da37e094c4a830ad42c83a76b670417bb",
