@@ -221,6 +221,18 @@ export interface UpdateStatus {
 export type RunMode = "chat" | "manual" | "default" | "auto";
 export type Preauthorization = "search_generalized" | "fetch_allowlisted" | "connector_readonly";
 export type BasisValue = "confirmed" | "pending" | "not_applicable";
+/** AI 次处理者清单（内核常量，带版本；客户授权记录时一并留痕）。 */
+export interface AiSubprocessors {
+  version: string;
+  items: { name: string; role: string }[];
+}
+export interface AiAuthorization {
+  engagement_terms: boolean;
+  default_ref?: string | null;
+  updated_at: string | null;
+  subprocessors?: AiSubprocessors;
+}
+
 export interface MatterBasis {
   /** 委托/保密授权（客户是否同意使用 AI 与第三方服务）。 */
   engagement: BasisValue;
@@ -258,7 +270,21 @@ export interface Matter {
   data_level?: "L0" | "L1" | "L2" | "L3a" | "L3b";
   basis?: MatterBasis;
   /** 四项依据怎么记下的（第 48 批）：按委托合同条款（律师的默认设置）/ 律师在本事项确认 / 逐项或旧事项（null）。 */
-  basis_source?: "engagement_terms" | "confirmed" | null;
+  /** 四项依据怎么记下的（第 51 批，D-216）：委托合同中的 AI 条款 / 客户单独书面同意 / 旧记录（律师确认、逐项）。 */
+  basis_source?: "engagement_terms" | "separate_consent" | "confirmed" | null;
+  /** 授权依据的出处（合同名称或编号、条款号、签订日期，或书面同意的日期与方式）。 */
+  basis_ref?: string | null;
+  /** 记录时告知客户的 AI 次处理者清单版本；与当前版本不同时须重新确认。 */
+  basis_notice_version?: string | null;
+  /** 按旧的次处理者清单记录、或缺少出处的早期记录，须重新确认（内核派生）。 */
+  basis_reconfirm?: boolean;
+  /** 客户授权状态（D-225，内核与四个强制点同一判定）：有效 / 待确认 / 待补记出处 / 次处理者清单已更新待重新确认。 */
+  basis_state?: "valid" | "pending" | "needs_ref" | "reconfirm";
+  /** 最近一次记录授权的时间与记录人（D-225；matters.list、matters.get）。 */
+  basis_recorded_at?: string | null;
+  basis_recorded_by?: string | null;
+  /** 授权记录历史（D-225，matters.get；新的在前，只增不改）。 */
+  authorization_history?: AuthorizationHistoryEntry[];
   /** 四项依据是否齐备（内核判定；当事人拒绝记录优先）。 */
   basis_complete?: boolean;
   full_pseudonym?: boolean;
@@ -275,6 +301,17 @@ export interface Matter {
   /** 这台电脑上关联的案卷文件夹（第 48 批，matters.get）；没关联为 null。 */
   folder?: MatterFolder | null;
   created_at: string;
+}
+
+/** 一条客户授权记录（D-225）。 */
+export interface AuthorizationHistoryEntry {
+  basis_source: string;
+  basis_ref: string;
+  basis_notice_version: string;
+  /** 记录时的次处理者清单是否为当前版本。 */
+  current_version: boolean;
+  recorded_by: string | null;
+  recorded_at: string;
 }
 
 /** 案卷文件夹（第 48 批）：位置只在这台电脑。 */
@@ -637,6 +674,14 @@ export interface Capabilities {
   customer_rows?: { feature: string; status: string; note: string }[];
 }
 
+/** 文字 → UTF-8 → base64（分块拼，长文字不撑爆调用栈）。 */
+export function utf8ToBase64(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const r = new FileReader();
@@ -775,11 +820,18 @@ export interface AccountMe {
 export interface CpAuditRow {
   seq: number;
   at: string;
-  actor: { kind: "device" | "root" | "ops" | "service"; id: string; fp?: string };
+  actor: { kind: "device" | "root" | "ops" | "service" | "account" | "claimant"; id: string; fp?: string };
+  /** 执行者的姓名（第 56 批：与“管理 → 成员”同一来源；解析不到为 null）。 */
   actor_name: string | null;
+  actor_is_me?: boolean;
   action: string;
   target: string | null;
+  /** 对象所属成员的姓名（设备、席位、账号；第 56 批起不再是“你的席位”这类整句）。 */
   target_name: string | null;
+  target_kind?: "device" | "seat" | "account" | "matter" | "activation" | "invitation" | "join_request" | "draft" | "connector" | "other" | null;
+  target_is_me?: boolean;
+  /** 对象是设备时：本人登记的第几台、共几台。 */
+  target_ordinal?: { n: number; of: number } | null;
   result: string;
   /** 数值明细（上限百分比、加量百分比、席位数、续订天数；第 39 批之前的旧记录另有旧计量的数）。 */
   detail?: Record<string, number>;
@@ -878,6 +930,14 @@ export const api = {
     browserDownload(btoa(String.fromCharCode(...new TextEncoder().encode(text))), suggestedName, "application/json");
     return true;
   },
+  /** 含事项名称等案件信息的文本（D-225 各事项授权记录导出）：保存位置按“含案件内容”提示。返回 false = 取消或失败。 */
+  saveCaseText: async (suggestedName: string, text: string, type = "text/csv"): Promise<boolean> => {
+    const target = await chooseSaveTarget(suggestedName, "case");
+    if (target === null) return false;
+    if (target && window.zrKernel?.saveText) return (await window.zrKernel.saveText(target.handle, text)).ok;
+    browserDownload(textToBase64(text), suggestedName, type);
+    return true;
+  },
   purgeMatter: (id: string, body: { confirm_title: string; early: boolean; reason: string }) => invoke<{ lifecycle: MatterLifecycle; receipt: DeletionReceiptView }>("matters.purge", { matter_id: id, ...body }),
   consentNotice: (id: string) => invoke<{ artifact_version_id: string; filename: string; note: string }>("matters.consent_notice", { matter_id: id }),
   parties: (matterId: string) => invoke<{ parties: { name: string; kind: "person" | "org"; aliases: string[]; role: string | null }[]; full_pseudonym: boolean }>("matters.parties.list", { matter_id: matterId }),
@@ -901,6 +961,13 @@ export const api = {
     const data_base64 = await fileToBase64(file);
     return invoke("materials.import", { matter_id: matterId, data_base64, filename: file.name, mime: file.type || "application/octet-stream" });
   },
+  /**
+   * 律师直接写的文字存成一份材料（第 55 批：开始面板的案情说明）。文字本来就在界面里，按内容交给内核（与浏览器形态拖放文件同一个入口，
+   * 内核照常算哈希、解析、加密入库）；不经文件路径。
+   */
+  /** supersedes：作为本事项某份材料的新版本（D-224 当事人信息：事项里只留一份当前有效）。 */
+  importMaterialText: (matterId: string, filename: string, text: string, supersedes?: string | null) =>
+    invoke<{ document_version_id: string; chars: number; sha256: string; note: string }>("materials.import", { matter_id: matterId, data_base64: utf8ToBase64(text), filename, mime: "text/plain", ...(supersedes ? { supersedes } : {}) }),
   /** 材料用途（我方 / 对方 / 参考；null 清除）。 */
   setMaterialRole: (documentVersionId: string, role: "ours" | "theirs" | "reference" | null) => invoke<{ role: string | null }>("materials.set_role", { document_version_id: documentVersionId, role }),
   /** 把本事项的 Word 成果作为新材料（V14 第 39 批：在上一轮修订稿 / 清洁稿 / 起草稿上继续修改）。 */
@@ -942,7 +1009,7 @@ export const api = {
   listSuspects: (matterId: string, documentVersionIds: string[], goal?: string) => invoke<{ suspects: SuspectView[]; summary: SendSummaryView }>("matters.suspects.list", { matter_id: matterId, document_version_ids: documentVersionIds, ...(goal ? { goal } : {}) }),
   reviewSuspects: (matterId: string, items: { value: string; decision: "name" | "not_name" }[]) =>
     invoke<{ added_to_parties: number; dismissed: number; rejected: string[] }>("matters.suspects.review", { matter_id: matterId, items }),
-  startRun: (matterId: string, body: { estimate_id: string; idempotency_key: string; goal?: string; title?: string; topic_hint?: string; mode?: RunMode; plan_first?: boolean; preauthorizations?: Preauthorization[]; skill?: string; skill_args?: Record<string, string>; primary_output?: string; review_rules?: boolean; followup_of?: string; mode_raise_confirmed?: boolean }) =>
+  startRun: (matterId: string, body: { estimate_id: string; idempotency_key: string; goal?: string; title?: string; topic_hint?: string; mode?: RunMode; plan_first?: boolean; preauthorizations?: Preauthorization[]; skill?: string; skill_args?: Record<string, string>; primary_output?: string; review_rules?: boolean; followup_of?: string; mode_raise_confirmed?: boolean; review_apply?: boolean }) =>
     invoke<{ run_id: string; status: string; mode?: RunMode }>("runs.start", { matter_id: matterId, ...body }),
   getRun: (runId: string) =>
     invoke<{ run: any; artifacts: any[]; inflight?: { model: number; search: number; fetch: number }; unresolved_operations?: UnresolvedOperation[]; waiting_ahead?: number }>("runs.get", { run_id: runId }),
@@ -1024,8 +1091,12 @@ export const api = {
   setDocStyle: (body: Partial<Pick<DocStyleView, "letterhead" | "letterhead_name" | "letterhead_lines" | "body" | "page_numbers" | "redline_author">>) => invoke<DocStyleView>("doc_style.set", body),
   writingPrefs: () => invoke<WritingPrefs>("writing_prefs.get"),
   /** 客户授权的默认设置（第 48 批）：委托合同是否含使用 AI 辅助的条款；开了以后新建事项默认按此记录。 */
-  aiAuthorization: () => invoke<{ engagement_terms: boolean; updated_at: string | null }>("ai_authorization.get"),
-  setAiAuthorization: (engagementTerms: boolean) => invoke<{ engagement_terms: boolean; updated_at: string | null }>("ai_authorization.set", { engagement_terms: engagementTerms }),
+  aiAuthorization: () => invoke<AiAuthorization>("ai_authorization.get"),
+  /** 律师本人的授权设置（第 51 批）：engagement_terms = 用常用条款出处预填；default_ref = 常用的委托合同 AI 条款出处。 */
+  setAiAuthorization: (p: { engagement_terms?: boolean; default_ref?: string | null }) => invoke<AiAuthorization>("ai_authorization.set", p),
+  /** 首次使用 AI 的数据去向告知（第 51 批）：律师本人看过的版本。 */
+  aiNotice: () => invoke<{ version: string; acked_version: string | null; acked_at: string | null; needs_ack: boolean }>("ai_notice.get"),
+  ackAiNotice: (version: string) => invoke<{ version: string; acked_at: string }>("ai_notice.ack", { version }),
   setWritingPrefs: (body: Partial<WritingPrefs>) => invoke<WritingPrefs>("writing_prefs.set", body),
   /** 上传律所 Word 模板：桌面客户端经系统对话框；开发形态退回文件输入框传字节。返回 null = 取消。 */
   setDocTemplate: async (fallback?: File | null): Promise<DocStyleView | null> => {

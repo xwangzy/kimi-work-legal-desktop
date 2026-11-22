@@ -38,12 +38,19 @@ input:focus, select:focus, textarea:focus { border-color: var(--focus-ring); }
 .logo-mark-bg { fill: var(--brand-mark-bg); }
 .logo-mark-k { fill: var(--brand-mark-fg); }
 .logo-mark-dot { fill: var(--brand-mark-dot); }
-.brand-lockup { display: inline-flex; align-items: center; gap: var(--sp-2); min-width: 0; color: var(--text-primary); }
-.brand-logo { width: 24px; height: 24px; }
-.brand-words { display: inline-flex; align-items: center; gap: 6px; min-width: 0; line-height: 1; }
-.brand-word { font-size: var(--fs-md); font-weight: 600; letter-spacing: -0.01em; }
-.brand-divider { flex: none; width: 1px; height: 14px; background: var(--border-default); }
-.brand-edition { font-size: var(--fs-caption); font-weight: 500; letter-spacing: 0.02em; color: var(--text-label); overflow: hidden; text-overflow: ellipsis; }
+/* 第 55 批：一行组合——标识 26px + 粗体字标“Kimi Work”（15px/700，收字距）+ 黑底小标“法律版”（图形，17px 高），与首页中央字标同一套写法 */
+.brand-lockup { display: inline-flex; align-items: center; gap: 9px; min-width: 0; color: var(--text-primary); }
+.brand-logo { width: 26px; height: 26px; }
+.brand-words { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.brand-word { display: block; flex: none; height: 20px; width: auto; overflow: visible; }
+.brand-tag { display: block; flex: none; position: relative; top: -1px; }
+.brand-tag-bg { fill: var(--btn-primary); }
+.brand-tag-text { fill: var(--btn-primary-text); }
+.brand-lockup.brand-lg { gap: 12px; }
+.brand-lockup.brand-lg .brand-logo { width: 36px; height: 36px; }
+.brand-lockup.brand-lg .brand-word { height: 27px; }
+.brand-lockup.brand-lg .brand-words { gap: 8px; }
+.brand-lockup.brand-lg .brand-tag { width: auto; height: 20px; top: -2px; }
 .brand-mark-btn { flex: none; display: grid; place-items: center; width: 40px; height: 40px; padding: 0; border: 0; border-radius: var(--r-sm); background: transparent; }
 button.brand-mark-btn:hover { background: var(--bg-hover); }
 button.brand-mark-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
@@ -304,6 +311,8 @@ button.chip:active, :is(button, summary, label).pill:active, .alias-chip:active 
 :is(button, summary, label).pill:hover { background: var(--bg-hover); }
 .mh-note { font-size: var(--fs-body); color: var(--status-warning-strong); }
 .mh-red { color: var(--status-danger-strong); }
+/* 常态说明（新事项还没记授权）：次要灰，不用告警色 */
+.mh-quiet { color: var(--text-secondary); }
 
 .basis-editor { display: flex; flex-direction: column; gap: 10px; }
 .basis-row { display: flex; justify-content: space-between; gap: 16px; align-items: center; border: 1px solid var(--border-subtle); border-radius: var(--r-sm); padding: 9px 12px; }
@@ -601,32 +610,18 @@ dl.cc-body dd { margin: 0; word-break: break-word; }
 .msg-assistant { align-self: flex-start; }
 .msg-notice { align-self: center; color: var(--text-secondary); font-size: var(--fs-body); }
 .msg-meta { font-size: var(--fs-xs); color: var(--text-secondary); margin-top: 2px; }
-/* “正在回答…”在两级文字色之间呼吸（降不透明度只留给禁用态，S8B-06）；系统要求减少动效时不动 */
 .chat-tools { display: flex; justify-content: flex-end; color: var(--text-secondary); }
-.msg-pending { animation: kwl-pulse 1.4s ease-in-out infinite; }
-@keyframes kwl-pulse { 50% { color: var(--text-primary); } }
-@media (prefers-reduced-motion: reduce) { .msg-pending { animation: none; } }
 .chat-composer textarea { min-height: 56px; }
+/* 问答的适用范围（D-225）：常驻一行安静提示，次要字、不加盒子 */
+.chat-scope-note { margin: var(--sp-1) 0 0; font-size: var(--fs-xs); color: var(--text-secondary); }
 
-/* 等回答的状态（第 48 批）：动画点 + 说明 + 已用时间 + 不定长进度条 + 补充说明；系统要求减少动效时全部静止（进度条显示为固定一段） */
+/* 等回答的状态（第 48 批；第 51 批改为 Kimi 蓝点，动画与减少动效见 styles-motion.css 的 .kwl-pulse）：蓝点 + 说明 + 已用时间 + 补充说明 */
 .chat-wait { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 280px; max-width: 520px; padding: var(--sp-3) var(--sp-4); border: 1px solid var(--border-subtle); border-radius: var(--r-md); background: var(--bg-subtle); color: var(--text-secondary); }
 .chat-wait-writing { margin-top: var(--sp-2); padding: var(--sp-2) var(--sp-3); }
 .chat-wait-head { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-body); }
 .chat-wait-title { color: var(--text-primary); font-weight: 600; }
 .chat-wait-time { margin-left: auto; font-size: var(--fs-xs); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.chat-wait-dots { display: inline-flex; gap: 3px; align-items: center; }
-.chat-wait-dots i { width: 6px; height: 6px; border-radius: var(--r-full); background: var(--accent); animation: kwl-dot 1.2s ease-in-out infinite; }
-.chat-wait-dots i:nth-child(2) { animation-delay: 0.2s; }
-.chat-wait-dots i:nth-child(3) { animation-delay: 0.4s; }
-@keyframes kwl-dot { 0%, 80%, 100% { transform: translateY(0); } 40% { transform: translateY(-4px); } }
-.chat-wait-bar { position: relative; height: 4px; overflow: hidden; border-radius: var(--r-full); background: var(--bg-active); }
-.chat-wait-bar span { position: absolute; top: 0; bottom: 0; left: 0; width: 38%; border-radius: var(--r-full); background: var(--accent); animation: kwl-bar 1.6s ease-in-out infinite; }
-@keyframes kwl-bar { 0% { transform: translateX(-100%); } 100% { transform: translateX(263%); } }
 .chat-wait-hint { font-size: var(--fs-caption); line-height: 1.5; }
-@media (prefers-reduced-motion: reduce) {
-  .chat-wait-dots i, .chat-wait-bar span { animation: none; }
-  .chat-wait-bar span { width: 100%; }
-}
 
 /* 深度思考开关（第 48 批）：关＝快速回答，开＝先充分思考再答 */
 .deep-toggle { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px; border: 1px solid var(--border-default); border-radius: var(--r-full); background: transparent; color: var(--text-secondary); font-size: var(--fs-body); cursor: pointer; white-space: nowrap; }
@@ -1147,7 +1142,7 @@ table.data td.num, table.data th.num { text-align: right; font-variant-numeric: 
 .activate { min-height: 100vh; display: grid; place-items: center; background: var(--bg-sidebar); padding: 24px; }
 .activate-card { width: min(480px, 100%); background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-card); padding: 28px 32px 24px; box-shadow: var(--shadow-xs); }
 .activate-card .brand { padding: 0 0 18px; height: auto; }
-.activate-card .brand-logo { width: 28px; height: 28px; }
+
 .activate-title { font-size: var(--fs-xl); font-weight: 600; margin: 0 0 8px; }
 .activate-lead { color: var(--text-secondary); font-size: var(--fs-base); line-height: 1.6; margin: 0 0 18px; }
 .activate-code { font-family: var(--font-mono); font-size: var(--fs-lg); letter-spacing: 0.06em; padding: 10px 12px; border: 1px solid var(--border-default); border-radius: var(--r-md); background: var(--bg-main); color: var(--text-primary); }
@@ -1725,7 +1720,7 @@ button.sidebar-empty:hover { color: var(--text-primary); }
 @media (prefers-reduced-motion: reduce) { .sidebar { transition: none; } }
 .nav-item { padding: 0 9px; }
 .nav-label { white-space: nowrap; overflow: hidden; text-overflow: clip; }
-.brand { padding-left: 6px; }
+.brand { padding-left: 4px; } /* 第 51 批：标识 28px，左缘 12 → 中心仍是 26，与图标栏对齐 */
 .sidebar-foot { padding: var(--sp-2) 4px; }
 .nav-rail-only { display: none; }
 .brand-expand-ico { display: none; color: var(--text-label); }

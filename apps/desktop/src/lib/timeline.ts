@@ -65,6 +65,7 @@ const LEGAL_TOOL_LABELS: Record<string, string> = {
   "calc.deadline": "计算期限",
   "calc.labor": "计算经济补偿",
   "calc.court_fee": "计算诉讼费",
+  "calc.ledger": "计算欠款、利息与抵充",
   "rules.propose": "起草审查要点",
   "redact.scan": "检查个人信息",
   "materials.list": "阅读材料",
@@ -91,6 +92,19 @@ const PRIMARY_MISSING_CAUSES: Record<string, string> = {
   // V16 F6：内核新增的原因码
   only_attachments: "助手只交了附件，没有交出主文书，可以在本任务里追问补出",
 };
+
+/**
+ * 修改轮没做完（超时、失败、启动失败）的一行（D-223 顺带修正）：与内核“还差什么”一致——已改出新版本的不说“文书是复核前的版本”
+ * （V13 真实走查 W4：超时前意见书已改出第 4～6 版）。事件带 revised（第 56 批起）按它区分；没带的旧事件用不下结论的说法。
+ */
+function reviewFixUnfinished(eventId: unknown, p: any, at: string | undefined): Step {
+  const why = p.status === "timed_out" ? "按复核意见修改超过时限" : "按复核意见修改没有完成";
+  const files = Array.isArray(p.revised_files) ? (p.revised_files as unknown[]).map(String).filter(Boolean) : [];
+  const revised = p.revised === undefined || p.revised === null ? null : Number(p.revised);
+  if (p.status === "start_failed" || revised === 0) return { key: `${eventId}`, level: "lawyer", icon: "fail", title: `${why}，文书是复核前的版本`, at, detail: "请按《独立复核意见》逐条核对" };
+  if (revised !== null && revised > 0) return { key: `${eventId}`, level: "lawyer", icon: "fail", title: `${why}，已改出新版本但没有全部改完`, at, detail: `${files.length > 0 ? `改过的：${files.map((f) => `《${f.replace(/\.(docx|xlsx)$/i, "")}》`).join("")}；` : ""}请以最新版本为准，按《独立复核意见》逐条核对哪些已改` };
+  return { key: `${eventId}`, level: "lawyer", icon: "fail", title: why, at, detail: "可能已改出部分新版本：请以最新版本为准，按《独立复核意见》逐条核对" };
+}
 
 export interface Step {
   key: string;
@@ -494,7 +508,15 @@ export function buildSteps(events: RunEvent[], skillTitles: Record<string, strin
       case "review.completed": {
         const n = Number(p.findings ?? 0);
         const must = Number(p.must ?? 0);
-        steps.push({ key: `${e.event_id}`, level: "lawyer", icon: "ok", title: n > 0 ? `独立复核提出 ${n} 条意见（其中必须改 ${must} 条），已交回助手处理` : "独立复核未发现实质问题", at, detail: n > 0 ? "意见见成果《独立复核意见》；处理结果见最终答复的“独立复核处理情况”" : undefined });
+        // D-223：只有建议、没有必须改的不再自动交回修改（是否交回由紧随其后的事件说明：review.skipped suggestions_only 或 review.fix_started）
+        steps.push({
+          key: `${e.event_id}`,
+          level: "lawyer",
+          icon: "ok",
+          title: n === 0 ? "独立复核未发现实质问题" : must > 0 ? `独立复核提出 ${n} 条意见（其中必须改 ${must} 条），已交回助手处理` : `独立复核提出 ${n} 条建议，没有必须改的`,
+          at,
+          detail: n === 0 ? undefined : must > 0 ? "意见见成果《独立复核意见》；处理结果见最终答复的“独立复核处理情况”" : "意见见成果《独立复核意见》",
+        });
         break;
       }
       // V18 第 43 批：复核调用失败先自动重试一次
@@ -502,6 +524,15 @@ export function buildSteps(events: RunEvent[], skillTitles: Record<string, strin
         steps.push({ key: `${e.event_id}`, level: "detail", icon: "wait", title: "独立复核没有连上，正在重试一次", at, detail: typeof p.error === "string" ? p.error : undefined });
         break;
       case "review.skipped":
+        // D-223：只有建议时不自动修改；按勾选的复核意见修改的追问不再另做复核。两者都不是“没做完”，用 ok 图标（“没做完的地方”只收 fail / dot）
+        if (p.reason === "suggestions_only") {
+          steps.push({ key: `${e.event_id}`, level: "lawyer", icon: "ok", title: "复核建议没有自动修改，由你决定是否采纳", at, detail: "可在结果下方勾选要采纳的几条，点“按勾选的意见修改”" });
+          break;
+        }
+        if (p.reason === "review_apply") {
+          steps.push({ key: `${e.event_id}`, level: "lawyer", icon: "ok", title: "按你勾选的复核意见修改：这一轮不再另做独立复核", at });
+          break;
+        }
         steps.push({ key: `${e.event_id}`, level: "lawyer", icon: "fail", title: p.reason === "no_session" ? "独立复核意见没能交回助手修改，请按《独立复核意见》核对" : "独立复核没有完成（已重试），这一稿未经独立复核", at, detail: typeof p.error === "string" ? p.error : undefined });
         break;
       // V18 第 43 批：修改之后，复核人只对照最新版文件核对“必须改”的意见是否落到了文件里
@@ -537,7 +568,7 @@ export function buildSteps(events: RunEvent[], skillTitles: Record<string, strin
             ? { key: `${e.event_id}`, level: "lawyer", icon: "dot", title: `独立复核提出 ${Number(p.must)} 条必须改的意见，修改轮没有改动任何文书或表格`, at, detail: "处理理由见最终答复的“独立复核处理情况”，请对照《独立复核意见》核对" }
             : p.status === "succeeded"
             ? { key: `${e.event_id}`, level: "lawyer", icon: "ok", title: "复核意见已处理完", at }
-            : { key: `${e.event_id}`, level: "lawyer", icon: "fail", title: p.status === "timed_out" ? "按复核意见修改超过时限，文书是复核前的版本" : "按复核意见修改没有完成，文书是复核前的版本", at },
+            : reviewFixUnfinished(e.event_id, p, at),
         );
         break;
       case "run.earlier_superseded": {
@@ -680,6 +711,34 @@ export function reusedArtifacts(events: readonly RunEvent[]): { artifact_version
     if (!id || seen.has(id)) continue;
     seen.add(id);
     out.push({ artifact_version_id: id, first_run_id: e.payload?.first_run_id ? String(e.payload.first_run_id) : null });
+  }
+  return out;
+}
+
+/** 时间线上的一段“已完成的步骤”（第 55 批）：折成一行，展开看逐步。 */
+export type FoldedItem = TimelineItem | { kind: "fold"; key: string; items: TimelineItem[] };
+
+/**
+ * 把连续做完的步骤折起来（第 55 批）：一单任务常有十几步“阅读材料、查法条版本、查看条文原文……”，全部摊开后“现在在做什么 / 等你定什么”
+ * 被挤到一屏之外。规则：连续做完的普通步骤里，去掉最前 head 个与最后 tail 个后中间至少还有 minFold 个，才把中间折成一行“已完成 N 步”
+ * （只折两三步省不了地方，反而多一次点击）；
+ * 失败的、等待中的、子任务组、联网步骤（律师要能直接看到实际发出了什么）不折，遇到它们这一段就结束。纯函数。
+ */
+export function foldDoneSteps(items: readonly TimelineItem[], head = 1, tail = 2, minFold = 4): FoldedItem[] {
+  const foldable = (it: TimelineItem) => it.kind === "step" && it.step.icon === "ok" && !NETWORK_TITLES.has(it.step.title);
+  const out: FoldedItem[] = [];
+  let i = 0;
+  while (i < items.length) {
+    let j = i;
+    while (j < items.length && foldable(items[j]!)) j++;
+    const run = items.slice(i, j);
+    if (run.length >= head + tail + minFold) {
+      const mid = run.slice(head, run.length - tail);
+      const first = mid[0]!;
+      out.push(...run.slice(0, head), { kind: "fold", key: `fold:${first.kind === "step" ? first.step.key : i}`, items: mid }, ...run.slice(run.length - tail));
+    } else out.push(...run);
+    if (j < items.length) out.push(items[j]!);
+    i = j + 1;
   }
   return out;
 }

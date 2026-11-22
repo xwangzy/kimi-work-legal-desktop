@@ -1,0 +1,185 @@
+/* 任务执行页（第 51 批精修）：时间线、过程面板、正在起草。后加载，覆盖 styles.css 里的同名规则；只用语义令牌。
+   设计取向：像“助手在汇报进展”，而不是日志列表——
+   · 时间线不再是一条贯穿全高的灰竖线 + 一串绿圈：每一步只在节点之间画短连线（节点上下各留 2px 空隙），做完的节点是浅灰底小勾（退后），
+     正在做的是 Kimi 蓝点呼吸（向前），等你确认的是橙色圈，失败是红色叉——同一种语言表达“现在轮到谁”；
+   · 标题与时间同一行，说明另起一行；处理细节层字更小更浅；
+   · 工作清单、进展说明、正在起草放在同一种浅底面板里，去掉左侧竖条和描边，靠留白分组；
+   · 新出现的步骤与面板轻轻浮起（kwl-rise），节点颜色 200ms 过渡；减少动效时全部静止。 */
+
+/* ── 时间线 ── */
+.timeline { margin: var(--sp-4) 0 0; padding: 0; border-left: 0; display: flex; flex-direction: column; }
+.timeline > .step, .timeline > .step-group { position: relative; }
+.timeline .step { display: grid; grid-template-columns: 20px minmax(0, 1fr); column-gap: var(--sp-3); padding: 6px 0; gap: 0 var(--sp-3); }
+.timeline > .step { animation: kwl-rise var(--motion-slow) var(--ease-out-soft) both; }
+/* 节点之间的短连线：上半段（本步顶到节点上缘）+ 下半段（节点下缘到本步底），首尾各去掉一段 */
+/* 第 55 批：连线改成一条连续的细线（1px），从第一个节点的中心连到最后一个节点的中心；节点自带一圈底色把线“断开”。
+   原来是每个节点上下各一小段 1.5px 的短线，五六步排下来像一串被剪断的虚线。 */
+.timeline > .step::before, .timeline > .step::after, .timeline > .step-group::before, .timeline > .step-group::after { content: ""; position: absolute; left: 9.5px; width: 1px; background: var(--border-subtle); }
+.timeline > .step::before, .timeline > .step-group::before { top: 0; height: 17px; }
+.timeline > .step::after, .timeline > .step-group::after { top: 17px; bottom: 0; }
+.timeline > :first-child::before { display: none; }
+.timeline > .step:last-child::after, .timeline > .step-group:last-child::after, .timeline > .step:has(+ .step-toggle)::after, .timeline > .step-group:has(+ .step-toggle)::after { display: none; }
+
+.step-dot { position: relative; z-index: 1; box-shadow: 0 0 0 3px var(--bg-main); width: 18px; height: 18px; margin: 2px 0 0 1px; flex: none; border-radius: var(--r-full); display: grid; place-items: center; background: var(--bg-surface); border: 1.5px solid var(--border-default); color: var(--text-label); transition: background-color var(--motion-base) ease, border-color var(--motion-base) ease, color var(--motion-base) ease; }
+.step-dot svg { width: 10px; height: 10px; stroke-width: 2.6; }
+/* 做完：一个小圆点，退到背景里（第 55 批：原来每步一个灰底小勾，步骤一多仍是“一串图标”；做完是常态，不需要逐个打勾——
+   只有“正在做 / 等你确认 / 失败”这些要人注意的状态才用醒目的标记） */
+.step-ok > .step-dot, .step-ok > summary > .step-dot { width: 7px; height: 7px; margin: 7.5px 0 0 6.5px; border: 0; background: var(--border-hover); }
+.step-ok > .step-dot svg, .step-ok > summary > .step-dot svg { display: none; }
+.step-ok .step-title { color: var(--text-strong); }
+/* 折起来的一段：两个小点叠成“省略”的样子，标题是次要灰 */
+.step-fold > summary > .step-dot { background: var(--border-default); box-shadow: 0 0 0 3px var(--bg-main), 0 -6px 0 -1px var(--border-default), 0 6px 0 -1px var(--border-default); }
+.step-fold > summary .step-title { font-size: var(--fs-caption); color: var(--text-secondary); line-height: 22px; }
+.step-fold > summary:hover .step-title { color: var(--text-primary); }
+.step-fold-more { color: var(--accent-text); }
+.step-fold[open] .step-fold-more { display: none; }
+.step-fold[open] > .step { margin-left: 0; }
+/* 失败：红底叉 */
+.step-fail > .step-dot, .step-fail > summary > .step-dot { border-color: transparent; background: var(--status-danger-bg); color: var(--status-danger-text); }
+/* 等待中的一般步骤：浅蓝圈 */
+.step-wait > .step-dot, .step-wait > summary > .step-dot { border-color: var(--accent-border); background: var(--accent-bg); }
+/* 正在做：Kimi 蓝点呼吸 */
+.step-active > .step-dot { border-color: transparent; background: var(--accent-bg); }
+.step-active > .step-dot .kwl-pulse { width: 7px; height: 7px; }
+/* 等你确认：橙色圈 + 实心点 */
+.step-you > .step-dot { border-color: var(--status-warning-solid); background: var(--status-warning-bg); }
+.step-you > .step-dot::after { content: ""; width: 6px; height: 6px; border-radius: var(--r-full); background: var(--status-warning-solid); }
+.step-you .step-title { color: var(--text-primary); font-weight: 500; }
+.step-you-hint, .step-you:not(:has(.step-you-hint)) .step-title { color: var(--status-warning-text); }
+.step-you-hint { flex: none; font-size: var(--fs-xs); font-weight: 500; }
+/* 排队：虚线圈 */
+.step-queued > .step-dot { border-style: dashed; border-color: var(--border-hover); }
+
+.step-body { min-width: 0; }
+.step-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px var(--sp-2); min-width: 0; }
+.step-title { font-size: var(--fs-base); line-height: 1.6; color: var(--text-primary); overflow-wrap: anywhere; }
+.step-meta { flex: none; font-size: var(--fs-xs); color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.step-detail { margin-top: 2px; font-size: var(--fs-caption); line-height: 1.6; color: var(--text-label); }
+.step-active .step-title { color: var(--text-primary); }
+.step-queued .step-title { color: var(--text-secondary); }
+.step-elapsed { margin-left: auto; flex: none; font-size: var(--fs-xs); color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.step-retry .step-title { color: var(--status-warning-strong); }
+/* 处理细节层：小一号、浅一级 */
+.step-detail-level .step-title { font-size: var(--fs-caption); color: var(--text-label); }
+.step-detail-level > .step-dot { transform: scale(0.78); }
+.step-sub { padding-left: 0; margin-left: var(--sp-5); }
+/* 成组的步骤（子任务、折起来的一段）本身是块：上面 .timeline .step 的两列网格只用于它的 summary 与里面的每一步
+   （第 55 批修：原来组本身也被排成“20px + 其余”两列，summary 挤在 20px 里，标题一字一行） */
+.timeline .step.step-group { display: block; padding: 0; }
+.step-group > summary { display: grid; grid-template-columns: 20px minmax(0, 1fr); column-gap: var(--sp-3); padding: 6px 0; }
+.step-group > .step { margin-left: var(--sp-5); }
+.step-toggle { margin: var(--sp-1) 0 0 32px; font-size: var(--fs-caption); align-self: flex-start; }
+.timeline-skel .step { align-items: center; }
+.timeline-skel .kwl-skel-line { height: 10px; }
+
+/* 标题下的状态胶囊在读到任务前留出位置（不闪“排队中”） */
+.exec-sub-loading { min-height: 24px; }
+.exec-sub-loading::before { content: ""; width: 168px; height: 22px; border-radius: var(--r-full); background: var(--bg-muted); }
+
+/* ── 过程面板：工作清单 / 子任务 / 进展说明（同一种浅底面板，无竖条、无描边） ── */
+.progress-panel { margin: var(--sp-4) 0; padding: var(--sp-4); border: 0; border-radius: var(--r-lg); background: var(--bg-subtle); display: flex; flex-direction: column; gap: var(--sp-4); }
+.run-panel { animation: kwl-rise var(--motion-slow) var(--ease-out-soft) both; }
+.progress-block .pane-title { margin: 0 0 4px; }
+.progress-head { display: flex; align-items: baseline; gap: var(--sp-2); }
+.progress-head-title { font-size: var(--fs-caption); font-weight: 600; color: var(--text-label); }
+.progress-count { font-size: var(--fs-xs); color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.progress-track { height: 3px; margin: var(--sp-2) 0 var(--sp-3); border-radius: var(--r-full); background: var(--bg-active); overflow: hidden; }
+.progress-track span { display: block; height: 100%; border-radius: var(--r-full); background: var(--accent); transition: width var(--motion-slow) var(--ease-standard); }
+.progress-panel .todo-list { display: flex; flex-direction: column; gap: 6px; font-size: var(--fs-body); }
+.progress-panel .todo-list li { display: grid; grid-template-columns: 16px minmax(0, 1fr); column-gap: 10px; align-items: start; color: var(--text-primary); font-weight: 400; }
+.progress-panel .todo-mark { width: 16px; height: 16px; margin-top: 3px; border-radius: var(--r-full); border: 1.5px solid var(--border-hover); display: grid; place-items: center; color: inherit; transition: background-color var(--motion-base) ease, border-color var(--motion-base) ease; }
+.progress-panel .todo-mark svg { width: 9px; height: 9px; stroke-width: 3; }
+.progress-panel .todo-done .todo-mark { border-color: transparent; background: var(--status-success-bg); color: var(--status-success-text); }
+.progress-panel .todo-doing .todo-mark { border-color: transparent; background: var(--accent-bg); }
+.progress-panel .todo-doing .todo-mark .kwl-pulse { width: 6px; height: 6px; }
+.progress-panel .todo-done .todo-text { color: var(--text-secondary); }
+.progress-panel .todo-doing .todo-text { font-weight: 500; }
+.progress-notes { display: flex; flex-direction: column; gap: var(--sp-3); }
+.progress-note { font-size: var(--fs-body); line-height: 1.75; color: var(--text-primary); }
+.progress-note p { margin: 0; }
+.progress-note-head { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; font-size: var(--fs-xs); font-weight: 500; color: var(--text-secondary); }
+.progress-note-mark { width: 14px; height: 14px; }
+.progress-panel .sub-list { font-size: var(--fs-caption); }
+details.progress-panel { gap: var(--sp-2); }
+details.progress-panel > summary { cursor: pointer; }
+
+/* ── 正在起草：同一种面板；标题行蓝点 + 字数，正文限高、自动跟到底、底部淡出 ── */
+.live-draft { margin: var(--sp-4) 0; padding: var(--sp-3) var(--sp-4) 0; border: 0; border-radius: var(--r-lg); background: var(--bg-subtle); max-height: none; overflow: visible; display: flex; flex-direction: column; gap: var(--sp-2); }
+.live-draft-head { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-caption); color: var(--text-label); }
+.live-draft-title { font-weight: 600; }
+.live-draft-n { margin-left: auto; font-size: var(--fs-xs); color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.live-draft-body { max-height: 300px; overflow: auto; padding-bottom: var(--sp-4); font-size: var(--fs-body); line-height: 1.75; -webkit-mask-image: linear-gradient(to top, transparent 0, var(--bg-subtle) 28px); mask-image: linear-gradient(to top, transparent 0, var(--bg-subtle) 28px); }
+
+/* 任务说明：收起的一行更安静 */
+.goal-details > summary { font-size: var(--fs-caption); color: var(--text-secondary); }
+
+/* ── 任务说明（第 55 批）：折叠时一行预览，展开是键值摘要 ── */
+.goal-brief { margin: var(--sp-3) 0 0; border-radius: var(--r-md); background: transparent; transition: background var(--motion-fast) var(--ease-standard); }
+.goal-brief[open] { background: var(--bg-subtle); }
+.goal-brief > summary { display: flex; align-items: center; gap: 0; min-width: 0; height: 32px; padding: 0 var(--sp-2) 0 var(--sp-2); border-radius: var(--r-md); list-style: none; cursor: pointer; font-size: var(--fs-caption); color: var(--text-secondary); }
+.goal-brief > summary::-webkit-details-marker { display: none; }
+.goal-brief > summary:hover { background: var(--bg-hover-soft); }
+.goal-brief[open] > summary:hover { background: transparent; }
+.goal-brief > summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.goal-brief-label { flex: none; margin-right: var(--sp-3); font-weight: 500; color: var(--text-label); }
+.goal-brief-preview { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.goal-brief[open] .goal-brief-preview { visibility: hidden; }
+.goal-brief-body { margin: 0; padding: 2px var(--sp-4) var(--sp-3) 23px; display: flex; flex-direction: column; gap: 6px; font-size: var(--fs-caption); line-height: 1.7; }
+.goal-brief-row { display: grid; grid-template-columns: 96px minmax(0, 1fr); column-gap: var(--sp-3); }
+.goal-brief-row dt { color: var(--text-secondary); }
+.goal-brief-row dd { margin: 0; color: var(--text-primary); overflow-wrap: anywhere; white-space: pre-wrap; }
+.goal-brief-plain { grid-template-columns: minmax(0, 1fr); }
+.goal-brief-plain dd { color: var(--text-strong); }
+
+/* ── 任务说明是这条线的起点（第 56 批）──
+   原先：一行带折叠箭头的灰字，下面另起一条竖线，两样东西各管各的。现在：任务说明左侧是一个空心小环，与下面步骤的圆点同列；
+   细线从小环连到第一步——读起来是一条线：你要什么 → 助手做了什么 → 现在在做什么。展开时不再垫灰底盒子，键值摘要贴着这条线排。
+   只在运行中的排法里连线（任务说明后面紧跟时间线时）；结束后“结果在上、过程收起”，小环保留、不连线。 */
+.goal-brief { position: relative; }
+.goal-brief[open] { background: transparent; }
+.goal-brief > summary { padding-left: 0; }
+.goal-brief > summary:hover { background: transparent; }
+.goal-brief > summary:hover .goal-brief-label { color: var(--text-primary); }
+.goal-brief > summary:not(.pill):not(:has(.step-dot))::before, .goal-brief[open] > summary:not(.pill):not(:has(.step-dot))::before { position: relative; z-index: 1; width: 9px; height: 9px; margin: 0 17.5px 0 5.5px; box-sizing: border-box; border: 1.5px solid var(--border-hover); border-radius: var(--r-full); background: var(--bg-main); box-shadow: 0 0 0 3px var(--bg-main); transform: none; transition: border-color var(--motion-fast) var(--ease-standard), background-color var(--motion-fast) var(--ease-standard); }
+.goal-brief > summary:hover::before { border-color: var(--text-label) !important; }
+.goal-brief[open] > summary:not(.pill):not(:has(.step-dot))::before { border-color: var(--text-label); background: var(--text-label); }
+/* 展开 / 收起的提示放到行尾：一个小箭头，展开时转向 */
+.goal-brief > summary::after { content: ""; flex: none; width: 5px; height: 5px; margin: 0 var(--sp-2) 2px var(--sp-3); border-right: 1.5px solid var(--border-hover); border-bottom: 1.5px solid var(--border-hover); transform: rotate(-45deg); transition: transform var(--motion-fast) var(--ease-standard); }
+.goal-brief[open] > summary::after { transform: rotate(45deg); }
+.goal-brief-body { padding: 0 var(--sp-4) var(--sp-2) 32px; }
+.goal-brief:has(+ .timeline)::after { content: ""; position: absolute; left: 9.5px; top: 24px; bottom: -23px; width: 1px; background: var(--border-subtle); }
+.goal-brief + .timeline { margin-top: var(--sp-2); }
+/* 第一步不再把线的上半截藏掉：线是从任务说明接下来的 */
+.goal-brief + .timeline > :first-child::before { display: block; }
+.goal-brief-row ol { margin: 0; padding-left: 1.4em; }
+@media (max-width: 760px) { .goal-brief-row { grid-template-columns: minmax(0, 1fr); } }
+
+/* ── 复核建议（D-223）：只有建议时没有自动修改，逐条列出供律师勾选。视觉与任务说明、时间线一致：细线分隔、次要灰，不加描边盒子 ── */
+.review-sugg { margin: var(--sp-4) 0 0; padding-top: var(--sp-3); border-top: 1px solid var(--border-subtle); }
+.review-sugg-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--sp-2) var(--sp-3); font-size: var(--fs-caption); }
+.review-sugg-title { font-weight: 500; color: var(--text-label); }
+.review-sugg-hint { color: var(--text-secondary); }
+.review-sugg-list { list-style: none; margin: var(--sp-2) 0 0; padding: 0; display: flex; flex-direction: column; }
+.review-sugg-item { position: relative; padding: var(--sp-2) 0 var(--sp-2) 0; }
+.review-sugg-item + .review-sugg-item { border-top: 1px solid var(--border-subtle); }
+.review-sugg-item > label { display: flex; align-items: flex-start; gap: var(--sp-3); cursor: pointer; }
+.review-sugg-item input[type="checkbox"] { flex: none; margin-top: 4px; }
+.review-sugg-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: var(--fs-caption); line-height: 1.7; }
+.review-sugg-line { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+.review-sugg-where { color: var(--text-secondary); overflow-wrap: anywhere; }
+.review-sugg-problem { color: var(--text-primary); overflow-wrap: anywhere; }
+.review-sugg-fix { color: var(--text-label); overflow-wrap: anywhere; }
+.review-sugg-level { flex: none; }
+.review-sugg-must { color: var(--status-danger-text); border-color: transparent; background: var(--risk-high-bg); }
+.review-sugg-actions { display: flex; justify-content: flex-end; margin-top: var(--sp-2); }
+
+@media (prefers-reduced-motion: reduce) {
+  .timeline > .step, .run-panel { animation: none; }
+  .step-dot, .progress-track span, .progress-panel .todo-mark { transition: none; }
+}
+
+/* ── 等你确认的卡片（确认、提问、提纲）：去掉左侧 3px 竖条，改为整圈一色细边 + 轻阴影，浮起出现 ──
+   蓝色 = 助手在问你 / 请你确认计划与提纲；橙色 = 要你批准的操作。时间线末尾的橙色节点指向这里。 */
+.card-confirm { border: 1px solid var(--status-warning-border); border-radius: var(--r-lg); box-shadow: var(--shadow-sm); animation: kwl-rise var(--motion-slow) var(--ease-out-soft) both; }
+.card-plan, .card-question, .card-outline { border: 1px solid var(--accent-border); border-left-color: var(--accent-border); }
+@media (prefers-reduced-motion: reduce) { .card-confirm { animation: none; } }

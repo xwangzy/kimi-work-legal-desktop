@@ -19,7 +19,7 @@ import { cutKeepingTokens, forgetRestored, restoredPlain, restoreTokens } from "
 import { followUpMaterialsText, nextScenarios, scenarioOfRun, type BusinessLine } from "../lib/scenarios.ts";
 import { currentBadges } from "../lib/badges.ts";
 import { engineHeartbeatMs, hasProgress, mergeProgress, phaseLine, progressActivityKey, progressTexts, retryStoppable, silenceMs, stallThresholdMs, progressView, type ProgressViewModel } from "../lib/progress.ts";
-import { buildSteps, groupSubtaskSteps, keyStepKeys, mergeRepeatSteps, problemSteps, processSummary, reusedArtifacts, sentByToolCall, toolLabel, type SentInfo, type Step } from "../lib/timeline.ts";
+import { buildSteps, foldDoneSteps, groupSubtaskSteps, keyStepKeys, mergeRepeatSteps, problemSteps, processSummary, reusedArtifacts, sentByToolCall, toolLabel, type SentInfo, type Step } from "../lib/timeline.ts";
 import { busyRunOfError } from "../lib/start-block.ts";
 import { methodLine, methodShort } from "../lib/run-method.ts";
 import { Select } from "../components/Select.tsx";
@@ -29,8 +29,16 @@ import { FileTypeTag } from "../components/ArtifactRow.tsx";
 import { previewCites, previewFactMarks, type ArtifactCitations, type FactMarkView } from "../lib/citation-review.ts";
 import { CitationClaims } from "../components/CitationClaims.tsx";
 import { Breadcrumb } from "../components/Breadcrumb.tsx";
+import { KimiPulse, useElapsed } from "../components/Loading.tsx";
+import { KimiMark } from "../components/Brand.tsx";
+import { fmtWait } from "../lib/waiting.ts";
+// 滚动到新卡片：系统要求减少动效时直接跳到位（盘点：此前平滑滚动不受“减少动效”控制）
+import { scrollBehavior } from "../lib/ui-prefs.ts";
+import "../styles-run.css";
+import { goalPreview, goalRows } from "../lib/goal-brief.ts";
 import { OutlineConfirm } from "../components/OutlineConfirm.tsx";
 import { confirmAndAnswer, outlineAnswer, outlineQuestion, type OutlineView } from "../lib/outline.ts";
+import { pendingReviewSuggestions, REVIEW_APPLY_HEAD, REVIEW_LEVEL_LABEL, reviewApplyText } from "../lib/review-suggestions.ts";
 
 /** 页面标题：场景卡名；律师自己描述的任务用描述前 30 字，悬停看全文（Z3 #21、V-g；第 26 批 runName）。 */
 function runTitle(run: any): string {
@@ -80,6 +88,8 @@ function downloadLabel(filename: string): string {
 export function RunView({ runId, matterId }: { runId: string; matterId: string }) {
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [status, setStatus] = useState("queued");
+  // 第一次取到任务状态之前不显示状态（第 51 批：原先初值“排队中”，打开任何任务——包括早已完成的——都先闪一下“排队中”再整页跳）
+  const [runLoaded, setRunLoaded] = useState(false);
   // 排队原因（V18 第 43 批）：前面有几个任务在等律师确认或回答
   const [waitingAhead, setWaitingAhead] = useState(0);
   const [run, setRun] = useState<any>(null);
@@ -141,6 +151,9 @@ export function RunView({ runId, matterId }: { runId: string; matterId: string }
   /** 追问时补勾的材料（上一轮没勾的）与勾选列表是否展开。 */
   const [followAdd, setFollowAdd] = useState<string[]>([]);
   const [followAddOpen, setFollowAddOpen] = useState(false);
+  /** 复核建议（D-223）：律师勾选的意见序号；点“按勾选的意见修改”后追问带 review_apply（追问框文字仍以那句开头时）。 */
+  const [reviewPick, setReviewPick] = useState<number[]>([]);
+  const [reviewApply, setReviewApply] = useState(false);
   // 追问框在页面最底部：展开补充材料的列表、出现确认行时都在它下面、落在可视区之外——滚到底，免得律师点了之后看不到变化
   const followWrapRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -205,6 +218,7 @@ export function RunView({ runId, matterId }: { runId: string; matterId: string }
         });
       }
       setStatus(r.run_status);
+      setRunLoaded(true);
       const g = await api.getRun(runId);
       setRun(g.run);
       setArtifacts(g.artifacts);
@@ -277,9 +291,11 @@ export function RunView({ runId, matterId }: { runId: string; matterId: string }
   const [factText, setFactText] = useState("");
   // 结果区的一句话结论（V18 A1）：取最新一份答复摘要的正文，不再依赖右栏选中的是哪一份
   const [replyText, setReplyText] = useState("");
+  // 未自动处理的复核意见（D-223）：只有建议时的全部建议，或没落实、没改完的必须改
+  const pendingReview = useMemo(() => pendingReviewSuggestions(events), [events]);
   const texts = useMemo(
-    () => [preview?.text ?? "", replyText, factText, liveText, ...progressTexts(progress), ...approvals.flatMap((a) => [a.title, a.preview.plan ?? "", a.preview.detail ?? ""]), ...questions.flatMap((q) => q.questions.flatMap((x) => [x.question, ...x.options.map((o) => o.label)])), ...events.map((e) => String(e.payload?.description ?? "")), ...artifacts.map((a) => `${a.title ?? ""}\n${a.filename ?? ""}`), ...(risk?.top.map((t) => t.issue) ?? []), ...(outline?.items.flatMap((x) => [x.claim, x.counter ?? "", ...x.basis.map((b) => b.note ?? ""), ...x.facts.map((f) => f.statement)]) ?? [])].join("\n"),
-    [preview, replyText, factText, liveText, progress, approvals, questions, events, artifacts, risk, outline],
+    () => [preview?.text ?? "", replyText, factText, liveText, ...(pendingReview?.items.flatMap((x) => [x.where, x.problem, x.fix]) ?? []), ...progressTexts(progress), ...approvals.flatMap((a) => [a.title, a.preview.plan ?? "", a.preview.detail ?? ""]), ...questions.flatMap((q) => q.questions.flatMap((x) => [x.question, ...x.options.map((o) => o.label)])), ...events.map((e) => String(e.payload?.description ?? "")), ...artifacts.map((a) => `${a.title ?? ""}\n${a.filename ?? ""}`), ...(risk?.top.map((t) => t.issue) ?? []), ...(outline?.items.flatMap((x) => [x.claim, x.counter ?? "", ...x.basis.map((b) => b.note ?? ""), ...x.facts.map((f) => f.statement)]) ?? [])].join("\n"),
+    [preview, replyText, factText, liveText, pendingReview, progress, approvals, questions, events, artifacts, risk, outline],
   );
   useEffect(() => {
     if (!texts.includes("〔")) return;
@@ -398,11 +414,11 @@ export function RunView({ runId, matterId }: { runId: string; matterId: string }
   const outlineRef = useRef<HTMLDivElement | null>(null);
   const firstCardKey = pendingCards[0] ? (pendingCards[0].kind === "approval" ? pendingCards[0].card.approval_id : pendingCards[0].card.question_id) : null;
   useEffect(() => {
-    if (firstCardKey) cardsRef.current?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+    if (firstCardKey) cardsRef.current?.scrollIntoView?.({ block: "start", behavior: scrollBehavior() });
   }, [firstCardKey]);
   const outlineKey = outline && !terminal ? outline.outline_id : null;
   useEffect(() => {
-    if (outlineKey) outlineRef.current?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+    if (outlineKey) outlineRef.current?.scrollIntoView?.({ block: "start", behavior: scrollBehavior() });
   }, [outlineKey]);
   const [showAllFiles, setShowAllFiles] = useState(false);
   const doneFiles = useMemo(() => currentFiles(artifacts, { primary: primaryName }), [artifacts, primaryName]);
@@ -502,8 +518,8 @@ export function RunView({ runId, matterId }: { runId: string; matterId: string }
 
   /** 追问：在同一 Agent 会话上开新一轮（上下文连续；新一轮有自己的记录、确认与成果）。先估价、显示一行确认，再发起。 */
   const prevMode: RunMode = (run?.input_snapshot?.run_options?.mode as RunMode | undefined) ?? "default";
-  const prepareFollowUp = async () => {
-    const text = followText.trim();
+  const prepareFollowUp = async (preset?: string) => {
+    const text = (preset ?? followText).trim();
     if (!text) return;
     setBusy(true);
     setErr("");
@@ -535,8 +551,12 @@ export function RunView({ runId, matterId }: { runId: string; matterId: string }
         plan_first: false,
         followup_of: runId,
         ...(raise ? { mode: "default" as RunMode, mode_raise_confirmed: true } : {}),
+        // 按勾选的复核意见修改（D-223）：这一轮内核不再独立复核、不再自动修改；律师把那段指示整个改掉了就按普通追问
+        ...(reviewApply && text.startsWith(REVIEW_APPLY_HEAD) ? { review_apply: true } : {}),
       });
       setFollowText("");
+      setReviewApply(false);
+      setReviewPick([]);
       setFollowConfirm(null);
       setFollowAdd([]);
       setFollowAddOpen(false);
@@ -628,11 +648,30 @@ export function RunView({ runId, matterId }: { runId: string; matterId: string }
   }
 
   // ——— 页面各块（V18 A1：运行中与结束后两种排法共用）———
-  const timelineEl = (
+  // 等你确认（第 51 批）：时间线最后一步就是那张待确认的卡（“需要你定一下”）时，把它画成橙色“轮到你”节点，不再另加一行重复
+  const pendingCount = terminal ? 0 : approvals.length + questions.length;
+  const lastStep = steps.at(-1);
+  const youKey = pendingCount > 0 && lastStep?.icon === "wait" ? lastStep.key : null;
+  const timelineEl = !runLoaded ? (
+    <TimelineSkeleton />
+  ) : (
     <div className="timeline">
-      {groupSubtaskSteps(steps).map((it) =>
-        it.kind === "step" ? (
-          <StepRow key={it.step.key} s={it.step} now={now} tokenMap={tokenMap} label={it.label} showTime={it.step.level === "detail" || keySteps.has(it.step.key)} />
+      {foldDoneSteps(groupSubtaskSteps(steps)).map((it) =>
+        it.kind === "fold" ? (
+          // 第 55 批：一长串做完的步骤折成一行（展开看逐步），把“现在在做什么 / 等你定什么”留在一屏之内
+          <details key={it.key} className="step step-ok step-group step-fold">
+            <summary>
+              <span className="step-dot" aria-hidden="true" />
+              <span className="step-body">
+                <span className="step-title">
+                  已完成 {it.items.length} 步<span className="step-fold-more"> · 展开</span>
+                </span>
+              </span>
+            </summary>
+            {it.items.map((x) => (x.kind === "step" ? <StepRow key={x.step.key} s={x.step} now={now} tokenMap={tokenMap} label={x.label} showTime={x.step.level === "detail" || keySteps.has(x.step.key)} /> : null))}
+          </details>
+        ) : it.kind === "step" ? (
+          <StepRow key={it.step.key} s={it.step} now={now} tokenMap={tokenMap} label={it.label} showTime={it.step.level === "detail" || keySteps.has(it.step.key)} you={it.step.key === youKey ? pendingCount : 0} />
         ) : (
           // 子任务折叠（Y4 #33，复核 S7B-05）：同一子任务的步骤只显示一行，展开看逐步
           <details key={it.key} className={`step step-${it.failed ? "fail" : it.done ? "ok" : "wait"} step-sub step-group`}>
@@ -652,14 +691,31 @@ export function RunView({ runId, matterId }: { runId: string; matterId: string }
           </details>
         ),
       )}
+      {/* 等你确认（第 51 批）：时间线末尾一个橙色节点，和“AI 在做”的蓝点分开——一眼看出现在轮到谁 */}
+      {!terminal && pendingCount > 0 && !youKey && (
+        <div className="step step-you">
+          <span className="step-dot" aria-hidden="true" />
+          <div className="step-body">
+            <div className="step-line">
+              <span className="step-title">等你确认：下面有 {approvals.length + questions.length} 项</span>
+            </div>
+          </div>
+        </div>
+      )}
       {!terminal && approvals.length === 0 && questions.length === 0 && !liveText && (
-        <div className={`step step-wait${pv.retry ? " step-retry" : ""}`}>
-          <span className="step-dot" />
-          <div className="step-body muted">
-            {/* 排队中不是“没进展”（第 29 批：本机同时处理的任务有上限，排在后面的曾被提示“可以取消后重新运行”） */}
-            {status === "queued"
-              ? queuedText(waitingAhead)
-              : (pv.retry ?? (silentFor > stallThresholdMs(progress) ? "已经有一阵子没有新进展了。任务仍在运行；如果长时间没有变化，可以取消后重新运行。" : phaseLine(progress, now, toolLabel) ?? "正在处理…"))}
+        <div className={`step ${status === "queued" ? "step-queued" : "step-active"}${pv.retry ? " step-retry" : ""}`}>
+          <span className="step-dot" aria-hidden="true">{status === "queued" ? null : <KimiPulse />}</span>
+          <div className="step-body" role="status" aria-live="polite">
+            <div className="step-line">
+              <span className="step-title">
+                {/* 排队中不是“没进展”（第 29 批：本机同时处理的任务有上限，排在后面的曾被提示“可以取消后重新运行”） */}
+                {status === "queued"
+                  ? queuedText(waitingAhead)
+                  : (pv.retry ?? (silentFor > stallThresholdMs(progress) ? "已经有一阵子没有新进展了。任务仍在运行；如果长时间没有变化，可以取消后重新运行。" : phaseLine(progress, now, toolLabel) ?? "正在处理…"))}
+              </span>
+              {/* 整个任务的已用时间（第 51 批：真实计时，不画进度；律师最长、最频繁的等待在这里） */}
+              {status !== "queued" && run?.created_at && <RunElapsed since={run.created_at} />}
+            </div>
             {retryStoppable(pv) && run && (
               <div className="banner-actions">
                 <ConfirmButton
@@ -888,6 +944,58 @@ export function RunView({ runId, matterId }: { runId: string; matterId: string }
       ))}
     </div>
   );
+  // 复核建议（D-223）：只有建议时没有自动修改；必须改没落实或没改完的同样列出。逐条勾选后复用追问链路发出修改指示
+  // （带 review_apply：这一轮不再另做复核与自动修改）。只有能追问的人（本人、事项未归档）看得到
+  const canFollowUp = run?.scenario === "a1.agent_task" && !!run?.is_mine && (matter?.lifecycle ?? "active") === "active" && (status === "succeeded" || status === "partial");
+  const reviewHead = pendingReview
+    ? pendingReview.mode === "suggestions"
+      ? `复核建议 ${pendingReview.items.length} 条（未自动修改）`
+      : pendingReview.mode === "open"
+        ? `必须改的复核意见 ${pendingReview.items.length} 条没有落实`
+        : `复核意见 ${pendingReview.items.length} 条没有改完`
+    : "";
+  const applyReview = () => {
+    if (!pendingReview) return;
+    const picked = pendingReview.items.filter((x) => reviewPick.includes(x.no));
+    if (picked.length === 0) return;
+    const text = reviewApplyText(picked, (t) => restoredPlain(t, tokenMap));
+    setFollowText(text);
+    setReviewApply(true);
+    void prepareFollowUp(text);
+  };
+  const reviewEl = doneLayout && canFollowUp && pendingReview && (
+    <section className="review-sugg" aria-label="复核建议">
+      <div className="review-sugg-head">
+        <span className="review-sugg-title">{reviewHead}</span>
+        <span className="review-sugg-hint">由你决定是否采纳，勾选后按意见修改</span>
+      </div>
+      <ul className="review-sugg-list">
+        {pendingReview.items.map((x) => {
+          const on = reviewPick.includes(x.no);
+          return (
+            <li key={x.no} className={`review-sugg-item${on ? " on" : ""}`}>
+              <label>
+                <input type="checkbox" aria-label={`采纳第 ${x.no} 条复核意见`} checked={on} disabled={busy} onChange={() => setReviewPick((ns) => (on ? ns.filter((n) => n !== x.no) : [...ns, x.no]))} />
+                <span className="review-sugg-body">
+                  <span className="review-sugg-line">
+                    <span className={`phase review-sugg-level review-sugg-${x.level}`}>{REVIEW_LEVEL_LABEL[x.level]}</span>
+                    {x.where && <span className="review-sugg-where">{renderTokens(x.where, tokenMap)}</span>}
+                  </span>
+                  <span className="review-sugg-problem">{renderTokens(x.problem, tokenMap)}</span>
+                  {x.fix && <span className="review-sugg-fix">改法：{renderTokens(x.fix, tokenMap)}</span>}
+                </span>
+              </label>
+            </li>
+          );
+        })}
+      </ul>
+      <div className="review-sugg-actions">
+        <button className="btn-ghost btn-sm" disabled={busy || reviewPick.length === 0} onClick={applyReview}>
+          按勾选的意见修改{reviewPick.length > 0 ? `（${reviewPick.length} 条）` : ""}
+        </button>
+      </div>
+    </section>
+  );
 
   return (
     // 第 27 批（评审 U3-11）：执行页也有 <main> 地标（读屏“跳到正文”；原来是唯一没有的主页面）
@@ -899,7 +1007,9 @@ export function RunView({ runId, matterId }: { runId: string; matterId: string }
         <div className="exec-head">
           <div>
             <h1 className="page-title" title={run?.goal ?? run?.input_snapshot?.goal ?? undefined}>{runTitle(run)}</h1>
-            <div className="exec-sub">
+            <div className={`exec-sub${runLoaded ? "" : " exec-sub-loading"}`} aria-busy={!runLoaded}>
+              {runLoaded && (
+              <>
               {/* 完成但草稿还没复核时，胶囊写下一步（v9.4 U1 §1.4：原来一律“已完成”，下面却是 6 份待复核） */}
               {status === "succeeded" && unreviewed > 0 ? (
                 <span className="pill pill-orange" title="任务已完成；成果都是草稿，等你复核">{unreviewed} 份待复核</span>
@@ -931,6 +1041,8 @@ export function RunView({ runId, matterId }: { runId: string; matterId: string }
                   </div>
                 )}
               </span>
+              </>
+              )}
             </div>
           </div>
           {!terminal && run && (
@@ -961,10 +1073,7 @@ export function RunView({ runId, matterId }: { runId: string; matterId: string }
         {/* 场景卡发起的任务（第 26 批）：标题是卡名，拼好的任务说明收进“任务说明”，要看再点开 */}
         {(run?.goal ?? run?.input_snapshot?.goal) &&
           (run?.input_snapshot?.title ? (
-            <details className="quiet-details goal-details">
-              <summary>任务说明</summary>
-              <div className="goal-bubble">{renderTokens(String(run.goal ?? run.input_snapshot.goal), tokenMap)}</div>
-            </details>
+            <GoalBrief goal={String(run.goal ?? run.input_snapshot.goal)} tokenMap={tokenMap} />
           ) : (
             String(run.goal ?? run.input_snapshot.goal).replace(/\s+/g, " ").trim().length > 30 && <div className="goal-bubble">{renderTokens(String(run.goal ?? run.input_snapshot.goal), tokenMap)}</div>
           ))}
@@ -986,6 +1095,7 @@ export function RunView({ runId, matterId }: { runId: string; matterId: string }
                 )}
               </section>
             )}
+            {reviewEl}
             {err && <div className="banner banner-red">{err}</div>}
             <div className="done-process">
               <button className="done-process-toggle" aria-expanded={processOpen} onClick={() => setProcessOpen((v) => !v)}>
@@ -1005,12 +1115,7 @@ export function RunView({ runId, matterId }: { runId: string; matterId: string }
             {timelineEl}
             {!terminal && hasProgress(pv) && <ProgressPanel vm={pv} tokenMap={tokenMap} />}
             {notesEl}
-            {!terminal && liveText.trim() && (
-              <div className="live-draft" aria-live="polite" aria-busy="true">
-                <div className="pane-title">正在起草…</div>
-                <Markdown text={liveText} tokenMap={tokenMap} />
-              </div>
-            )}
+            {!terminal && liveText.trim() && <LiveDraft text={liveText} tokenMap={tokenMap} />}
             {err && <div className="banner banner-red">{err}</div>}
             {reconcileEl}
             {issueEl}
@@ -1333,43 +1438,101 @@ function Citations({ ev }: { ev: RunEvent | undefined }) {
   );
 }
 
+/**
+ * 任务说明（第 55 批）：折叠时一行——“任务说明”+ 第一句预览；展开是一张键值摘要（做什么、诉讼请求逐项、法院……），
+ * 取代原来点开才看得到的一只灰色气泡。排版规则见 lib/goal-brief.ts，不改任务说明的一个字。
+ */
+function GoalBrief({ goal, tokenMap }: { goal: string; tokenMap: Map<string, string | null> }) {
+  const rows = goalRows(goal);
+  return (
+    <details className="goal-brief">
+      <summary>
+        <span className="goal-brief-label">任务说明</span>
+        <span className="goal-brief-preview">{renderTokens(goalPreview(goal), tokenMap)}</span>
+      </summary>
+      <dl className="goal-brief-body">
+        {rows.map((r, i) =>
+          r.label ? (
+            <div key={i} className="goal-brief-row">
+              <dt>{r.label}</dt>
+              <dd>
+                {r.items ? (
+                  <ol>
+                    {r.items.map((x, j) => (
+                      <li key={j}>{renderTokens(x, tokenMap)}</li>
+                    ))}
+                  </ol>
+                ) : (
+                  renderTokens(r.text, tokenMap)
+                )}
+              </dd>
+            </div>
+          ) : (
+            <div key={i} className="goal-brief-row goal-brief-plain">
+              <dd>{renderTokens(r.text, tokenMap)}</dd>
+            </div>
+          ),
+        )}
+      </dl>
+    </details>
+  );
+}
+
 /** 时间线的一步：律师层显示相对时间、处理细节显示时分秒，悬停看完整时间（Y4 R-12）。 */
-function StepRow({ s, now, tokenMap, label, showTime }: { s: Step; now: number; tokenMap: Map<string, string | null>; label?: string; showTime: boolean }) {
+function StepRow({ s, now, tokenMap, label, showTime, you = 0 }: { s: Step; now: number; tokenMap: Map<string, string | null>; label?: string; showTime: boolean; /** >0：这一步正等律师确认（画成橙色节点，写“下面有 n 项”）。 */ you?: number }) {
   const t = showTime ? stepTime(s.at, s.level, now) : null;
   return (
-    <div className={`step step-${s.icon}${s.agent ? " step-sub" : ""}`}>
-      <span className="step-dot">{s.icon === "ok" ? <Icon.check /> : s.icon === "fail" ? <Icon.x /> : null}</span>
+    // 第 51 批：标题与时间同一行（时间是从属信息，靠右淡出），说明另起一行；节点按状态着色，见 styles-run.css
+    <div className={`step ${you > 0 ? "step-you" : `step-${s.icon}`}${s.agent ? " step-sub" : ""}${s.level === "detail" ? " step-detail-level" : ""}`}>
+      <span className="step-dot" aria-hidden="true">{s.icon === "ok" ? <Icon.check /> : s.icon === "fail" ? <Icon.x /> : null}</span>
       <div className="step-body">
-        <div className="step-title">
-          {label ? <span className="tag tag-sub">{label}</span> : null}
-          {s.title}
+        <div className="step-line">
+          <span className="step-title">
+            {label ? <span className="tag tag-sub">{label}</span> : null}
+            {s.title}
+          </span>
+          {(t || s.meta) && (
+            <span className="step-meta">
+              {t && <time dateTime={s.at} title={t.title}>{t.text}</time>}
+              {t && s.meta ? " · " : ""}
+              {s.meta}
+            </span>
+          )}
+          {you > 0 && <span className="step-you-hint">等你确认 · 下面有 {you} 项</span>}
         </div>
         {s.detail && <div className="step-detail">{renderTokens(s.detail, tokenMap)}</div>}
-        {(t || s.meta) && (
-          <div className="step-meta">
-            {t && <time dateTime={s.at} title={t.title}>{t.text}</time>}
-            {t && s.meta ? " · " : ""}
-            {s.meta}
-          </div>
-        )}
       </div>
     </div>
   );
 }
 
-/** 执行态过程面板（K7-P）：工作清单、子任务、后台任务、进展通知、上下文整理。 */
+/**
+ * 执行态过程面板（K7-P）：工作清单、子任务、后台任务、进展通知、上下文整理。
+ * 第 51 批：去掉左侧竖条与描边，改为一块浅底面板，块与块之间用留白分开；工作清单带真实计数与细进度条（完成数 / 总数，不估算）；
+ * 正在做的一项用 Kimi 蓝点、做完的打勾、没做的空心圈；“助手的进展”前面是 Kimi 标识，读起来是助手在汇报。
+ */
 function ProgressPanel({ vm, tokenMap }: { vm: ProgressViewModel; tokenMap: Map<string, string | null> }) {
   return (
-    <div className="progress-panel" aria-live="polite">
+    <div className="progress-panel run-panel" aria-live="polite">
       {vm.todo && (
-        <div className="progress-block">
-          <div className="pane-title">{vm.todo.title}</div>
+        <div className="progress-block progress-todo">
+          <div className="progress-head">
+            <span className="progress-head-title">助手的工作清单</span>
+            <span className="progress-count" aria-label={`已完成 ${vm.todo.done} 项，共 ${vm.todo.total} 项`}>
+              {vm.todo.done}/{vm.todo.total}
+            </span>
+          </div>
+          <div className="progress-track" aria-hidden="true">
+            <span style={{ width: `${vm.todo.total > 0 ? Math.round((vm.todo.done / vm.todo.total) * 100) : 0}%` }} />
+          </div>
           <ul className="todo-list">
             {vm.todo.items.map((t, i) => (
               <li key={i} className={`todo-${t.state}`}>
-                <span className="todo-mark" aria-hidden="true">{t.mark}</span>
+                <span className="todo-mark" aria-hidden="true">
+                  {t.state === "done" ? <Icon.check /> : t.state === "doing" ? <KimiPulse /> : null}
+                </span>
                 <span className="sr-only">{t.state === "done" ? "已完成：" : t.state === "doing" ? "进行中：" : "待做："}</span>
-                {renderTokens(t.text, tokenMap)}
+                <span className="todo-text">{renderTokens(t.text, tokenMap)}</span>
               </li>
             ))}
           </ul>
@@ -1377,7 +1540,9 @@ function ProgressPanel({ vm, tokenMap }: { vm: ProgressViewModel; tokenMap: Map<
       )}
       {vm.subagents && (
         <div className="progress-block">
-          <div className="pane-title">{vm.subagents.title}</div>
+          <div className="progress-head">
+            <span className="progress-head-title">{vm.subagents.title}</span>
+          </div>
           <ul className="sub-list">
             {vm.subagents.items.map((x, i) => (
               <li key={i} className={x.failed ? "sub-failed" : undefined}>
@@ -1406,10 +1571,13 @@ function ProgressPanel({ vm, tokenMap }: { vm: ProgressViewModel; tokenMap: Map<
         </div>
       )}
       {vm.notes.length > 0 && (
-        <div className="progress-block">
+        <div className="progress-block progress-notes">
           {vm.notes.map((n, i) => (
             <div key={i} className="progress-note">
-              <div className="muted">{n.source}的进展</div>
+              <div className="progress-note-head">
+                <KimiMark className="progress-note-mark" />
+                {n.source}的进展
+              </div>
               <Markdown text={n.text} tokenMap={tokenMap} />
             </div>
           ))}
@@ -1420,3 +1588,58 @@ function ProgressPanel({ vm, tokenMap }: { vm: ProgressViewModel; tokenMap: Map<
   );
 }
 
+/** 读取任务之前的时间线占位（第 51 批）：三个节点 + 一行字的骨架，延迟出现。 */
+function TimelineSkeleton() {
+  return (
+    <div className="timeline timeline-skel kwl-skel" role="status" aria-label="正在载入任务">
+      {["42%", "58%", "36%"].map((w) => (
+        <div key={w} className="step">
+          <span className="step-dot" aria-hidden="true" />
+          <span className="kwl-skel-line" style={{ width: w }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** 整个任务已用多久（每秒刷新；不估算剩余时间）。 */
+function RunElapsed({ since }: { since: string }) {
+  const t = Date.parse(since);
+  const ms = useElapsed(Number.isFinite(t) ? t : null);
+  if (!Number.isFinite(t)) return null;
+  return <span className="step-elapsed">已用 {fmtWait(ms)}</span>;
+}
+
+
+/**
+ * 正在起草（第 51 批）：标题行是 Kimi 蓝点 + “正在起草” + 已写字数（真实计数）；正文区限高、新字出现时自动跟到底部
+ * （律师往上翻看时不抢滚动），底部淡出提示还在继续写。
+ */
+function LiveDraft({ text, tokenMap }: { text: string; tokenMap: Map<string, string | null> }) {
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const stick = useRef(true);
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
+  }, [text]);
+  const chars = text.replace(/\s+/g, "").length;
+  return (
+    <div className="live-draft run-panel" aria-live="polite" aria-busy="true">
+      <div className="live-draft-head">
+        <KimiPulse />
+        <span className="live-draft-title">正在起草</span>
+        <span className="live-draft-n">{chars.toLocaleString("en-US")} 字</span>
+      </div>
+      <div
+        className="live-draft-body"
+        ref={bodyRef}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+        }}
+      >
+        <Markdown text={text} tokenMap={tokenMap} />
+      </div>
+    </div>
+  );
+}

@@ -55,7 +55,7 @@ import {
 import type { KernelDb } from "../db.ts";
 import { appendAuditEvent, type LedgerSigner } from "../ledger-signer.ts";
 import { currentTenantEpoch } from "../devices.ts";
-import { anonMatterIdOf, basisCompleteOf, dataLevelOf } from "../egress/gate-host.ts";
+import { aiAuthorizedOf, anonMatterIdOf, dataLevelOf } from "../egress/gate-host.ts";
 
 export type GovernanceMode = "control_plane" | "local_dev";
 
@@ -1135,8 +1135,8 @@ export class FirmGovernance {
   }
 
   summaryOf(matterId: string): AnonMatterSummary | null {
-    const m = this.d.db.get<{ confidentiality: string; consent_status: string; basis: string | null; model_endpoint: string; policy_version: number }>(
-      `SELECT confidentiality, consent_status, basis, model_endpoint, policy_version FROM matters WHERE matter_id = ? AND tenant_id = ?`,
+    const m = this.d.db.get<{ confidentiality: string; consent_status: string; basis: string | null; basis_source: string | null; basis_ref: string | null; basis_notice_version: string | null; model_endpoint: string; policy_version: number }>(
+      `SELECT confidentiality, consent_status, basis, basis_source, basis_ref, basis_notice_version, model_endpoint, policy_version FROM matters WHERE matter_id = ? AND tenant_id = ?`,
       [matterId, this.d.tenantId],
     );
     if (!m) return null;
@@ -1144,7 +1144,8 @@ export class FirmGovernance {
       anon: this.anonIdOf(matterId),
       level: dataLevelOf(m.confidentiality, m.consent_status),
       endpoint: (["standard", "byok", "private", "mock", "none"].includes(m.model_endpoint) ? m.model_endpoint : "none") as AnonMatterSummary["endpoint"],
-      basis_complete: basisCompleteOf(m) && m.model_endpoint !== "none",
+      // 第 51 批（D-216）、D-225：授权有效须有出处与当前次处理者清单版本（网关二次检查同一函数）
+      basis_complete: aiAuthorizedOf(m),
       version: Number(m.policy_version) || 0,
       updated_at: new Date(this.now()).toISOString(),
     };

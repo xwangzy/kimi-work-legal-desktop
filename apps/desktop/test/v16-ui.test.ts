@@ -71,7 +71,7 @@ test("V16 A4：按你的意见修改文书没有 Word 时不预选、说明原�
   assert.equal(wordDocGap(card("contract-review"), txt, []), null);
   assert.deepEqual(preselectDocs(card("casefile"), mixed), ["t", "w"]);
   const ui = src("components/ScenarioStart.tsx");
-  assert.match(ui, /!wordGap && missing\.length === 0/, "缺 Word 时开始按钮保持禁用");
+  assert.match(ui, /!wordGap && !noCase && missing\.length === 0/, "缺 Word 时开始按钮保持禁用");
   assert.match(ui, /\{wordGap && <div className="ss-need">\{wordGap\}<\/div>\}/);
 });
 
@@ -154,7 +154,7 @@ test("V16 F1～F6：出具法律意见书新卡；劳动者卡改名；催告函
     const base = buildGoal(c, { type: "买卖", redline: "不用，先看审查意见" }, "");
     assert.doesNotMatch(base, /建议修订稿/, id);
     assert.ok(!("redline" in skillArgsOf(c, { type: "买卖", redline: "不用，先看审查意见" })));
-    assert.match(buildGoal(c, { type: "买卖", redline: "要：按审查意见直接在原件上写修订" }, ""), /审查意见出完后，按必须修改与建议修改的意见在原件上写一份建议修订稿（修订痕迹）。$/);
+    assert.match(buildGoal(c, { type: "买卖", redline: "要：按审查意见直接在原件上写修订" }, ""), /审查意见出完后，按必须修改与建议修改的意见在原件上写一份建议修订稿（修订痕迹）。(?:\n读者是本公司的业务部门与管理层：[^\n]*)?$/);
   }
   assert.match(src("lib/timeline.ts"), /only_attachments: "助手只交了附件，没有交出主文书，可以在本任务里追问补出"/);
   assert.match(src("components/Cards.tsx"), /<textarea className="q-other"/, "提问卡“其他”改多行");

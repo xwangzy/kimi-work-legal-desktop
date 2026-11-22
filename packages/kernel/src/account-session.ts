@@ -197,6 +197,18 @@ export function onboardingStateText(state: string, o: { admin?: boolean } = {}):
   }
 }
 
+/** 席位令牌取不到时的发起阻断原因（第 55 批 K3；审计 B 5.3）：按最近一次同步“取席位令牌”那一步的结果码说清原因与办法。 */
+export const SEAT_NONE_REASON = "本所席位已用完或还没有给你分配席位：请联系律所管理员释放闲置席位或增购席位，分到席位后联网即可继续（经标准端点的推理与联网检索暂不可用）";
+export const SEAT_REVOKED_REASON = "你的席位已被律所收回：请联系律所管理员重新分配席位（经标准端点的推理与联网检索暂不可用）";
+export const SEAT_PENDING_REASON = "席位令牌未取得或已失效（联网后自动续期）：经标准端点的推理与联网检索暂不可用";
+
+/** seatStep：控制面同步报告里 steps.seat 的值（如 "no_seat"、"seat_revoked"、"cp_unreachable"；没同步过为 null）。纯函数。 */
+export function seatBlockReason(seatStep: string | null | undefined): string {
+  if (seatStep === "no_seat") return SEAT_NONE_REASON;
+  if (seatStep === "seat_revoked") return SEAT_REVOKED_REASON;
+  return SEAT_PENDING_REASON;
+}
+
 /**
  * 非账号的控制面调用（用量、上限、律所策略、操作记录）失败 → 律师话（第 46 批：原来写“控制面：<代码>”）。
  * 不认识的代码一律说“中软服务暂时不可用，请稍后重试”；原始代码只进日志与诊断。
@@ -229,7 +241,19 @@ export function controlPlaneErrorText(code: string, o: { min_version?: string | 
       return clientOutdatedText(o.min_version ?? null);
     case "staff_client_forbidden":
       return "这是中软平台人员账号，请在网页控制台登录";
+    // 第 56 批（真实流程验收）：律所策略草稿被规则拒绝时，原先一律说“中软服务暂时不可用”——管理员以为服务坏了，其实是没签名或草稿过时
+    case "admin_threshold_not_met":
+      return "这份草稿放宽了规则，要管理员先在自己的电脑上确认签名才能发布（团队版 1 人，律所版 2 人）";
+    case "draft_published":
+      return "这份草稿已经发布过了：刷新后看当前生效的策略";
+    case "draft_stale":
+      return "已有更新的策略发布了，这份草稿已过时：请重新起草";
+    case "draft_unknown":
+      return "找不到这份草稿：可能已被撤下，请刷新后重新起草";
     default:
       return "中软服务暂时不可用，请稍后重试";
   }
 }
+
+/** 规则类拒绝（不是服务故障）：界面按“这件事现在不能做”提示，不提示“稍后重试”。 */
+export const CP_RULE_REJECTIONS: ReadonlySet<string> = new Set(["admin_threshold_not_met", "draft_published", "draft_stale", "draft_unknown"]);

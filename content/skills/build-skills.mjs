@@ -59,6 +59,12 @@ for (const id of ids) {
   const fm = frontmatter(text, file);
   if (fm.name !== id || !/^[a-z][a-z0-9-]{1,47}$/.test(id)) throw new Error(`${file}：name 必须与目录名一致且为小写连字符`);
   if (!fm.description || [...fm.description].length > 250) throw new Error(`${file}：description 必填且不超过 250 字（现 ${[...(fm.description ?? "")].length} 字）`);
+  // 第 56 批（Skills 集成核查 P0-1）：正文不得含上游 expandSkillParameters 会替换的占位符（`$参数名`、`$ARGUMENTS`、`$0`……）——
+  // 上游按 Skill 工具 args 按位置替换，没传 args 就替换成空串（“受诉法院（``）”）。方法参数一律写成“方法参数 `name`”，
+  // 值只由内核提示词里“方法参数：name=…”一行给出（executor.ts methodPromptLine）。用例 packages/kernel/test/b56-skill-params.test.ts 按上游同一规则复核
+  const body = text.replace(/^---\n[\s\S]*?\n---\n/, "");
+  const placeholder = /\$(?:ARGUMENTS|\d|[A-Za-z_])[A-Za-z_0-9[\]]*/.exec(body);
+  if (placeholder) throw new Error(`${file}：正文含会被上游按 Skill 参数替换的占位符 ${placeholder[0]}，请改写成“方法参数 \`名称\`”`);
   const req = fm.kwl.tools_required ?? [];
   const bad = req.filter((t) => !LEGAL_MCP_TOOLS.includes(t));
   if (bad.length) throw new Error(`${file}：tools_required 含 Agent 调不到的工具：${bad.join("、")}`);
@@ -68,7 +74,8 @@ for (const id of ids) {
   const primary = Array.isArray(fm.kwl.outputs) && fm.kwl.outputs.length > 0 ? String(fm.kwl.outputs[0]) : "";
   if (/\.docx$/i.test(primary) && !req.some((t) => t === "docx.render_report" || t === "docx.revise")) throw new Error(`${file}：主交付物是 Word（${primary}），tools_required 须含 docx.render_report 或 docx.revise`);
   // 主交付物是 Excel（第 31 批，审查 B-12）：内核同样核对有没有交出表，出表工具须是必需（金额测算、引用核验原先只列为可选）
-  if (/\.xlsx$/i.test(primary) && !req.includes("xlsx.render_table")) throw new Error(`${file}：主交付物是 Excel（${primary}），tools_required 须含 xlsx.render_table`);
+  // 第 57 批：calc.ledger 给 title 时直接成表，也是能交出 Excel 的工具
+  if (/\.xlsx$/i.test(primary) && !req.includes("xlsx.render_table") && !req.includes("calc.ledger")) throw new Error(`${file}：主交付物是 Excel（${primary}），tools_required 须含 xlsx.render_table 或 calc.ledger`);
   // 全部交付物（第 29 批）：同一方法的不同场景卡可以指定其中一项为主交付物（尽调“清单”与“发现与报告”共用一个方法；卡上指定的 Word 主交付物由桌面端用例核对必需工具）
   const outputs = Array.isArray(fm.kwl.outputs) ? fm.kwl.outputs.map(String).slice(0, 12) : [];
   skills.push({ id, version: fm.kwl.version ?? "0.0.0", tier: fm.kwl.tier ?? "beta", lines: fm.kwl.lines ?? [], tools_required: req, ...(fm.kwl.requires_outline === "true" ? { requires_outline: true } : {}), ...(primary ? { primary_output: primary } : {}), ...(outputs.length > 0 ? { outputs } : {}), title: (/^# (.+)$/m.exec(text) ?? [])[1] ?? id, description: fm.description });
