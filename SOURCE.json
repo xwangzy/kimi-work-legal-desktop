@@ -4,7 +4,7 @@
   "api": "kwl-cp/2",
   "monorepo": {
     "path": "platform/",
-    "commit": "b146b1eab2b892508d9a8dcc36af066a89733d31",
+    "commit": "bf9fba63be7a9ce6323564beec8b638aed4767cf",
     "dirty": false
   },
   "shared_contract_packages": [
@@ -494,7 +494,7 @@
     "packages/egress-gate/package.json": "f33a0f855187508ad8f0b150dd9d977818ea954bd0b495d0add83afa11d5145c",
     "packages/egress-gate/src/approval.ts": "42a776f718a6589dd2732bdf70ed831a029f0e40c464e62ec456b2a684e209b7",
     "packages/egress-gate/src/baseline.ts": "035ae098b27197bd43e1f7a27150425f43781473f5933717467dd06e36047e85",
-    "packages/egress-gate/src/chat-payload.ts": "c5593ace8f85cc760c8798bfbafaac062e74fe380e180afc80d15792d34771e0",
+    "packages/egress-gate/src/chat-payload.ts": "0ab65e192c401c8430a851842c28107e7ac17a10289b89de1105e806ee954085",
     "packages/egress-gate/src/cp-relay.ts": "545287a80432acd70f1186b59fe3c6e319b00efff256d14a39477b1da674b1ab",
     "packages/egress-gate/src/dist-relay.ts": "a9622fb9738f7d4b107b1b5f31504a332e8bdf45655626e5910f78ba3c808ea0",
     "packages/egress-gate/src/fetcher.ts": "840e129182c702a91445b0f82a39935cf25d2709f7ecfa4ad6f8521e64f36a7d",
@@ -517,7 +517,7 @@
     "packages/egress-gate/test/b41-known-only.test.ts": "8e150a09e428d7bf5c7b09a84479b8892aa4e27f42644948079c0f822dbf1a80",
     "packages/egress-gate/test/b46-gate-text.test.ts": "90bb53b23c3b7b1ce55b15f362e3dd76fd29e2d8e2c8a94d8e82cb9a28d5547e",
     "packages/egress-gate/test/b52-connection-probe.test.ts": "312b98cad8f9aa5864999466a3dcd58dc66f7140028f7ccfd92ec7c16927686c",
-    "packages/egress-gate/test/b60-gate-refusal.test.ts": "3c6aa3f14065c23d0ed20eb756ba710e855023c3a0b1a06c7eae41696d54db08",
+    "packages/egress-gate/test/b60-gate-refusal.test.ts": "220a2b04ac6dae70b6ad854921798b19989bdf302793d990691f7706aca32d9e",
     "packages/egress-gate/test/cp-relay.test.ts": "e38dd9f606a38fb93f6ec89f8e83b8427b06c45ceae1003ba7bafd3a69d0ed57",
     "packages/egress-gate/test/desktop-surface.test.ts": "b2afa54e60d3b0fb663c4859543bba0edde6c72d7593c18f235a40b442b31fe7",
     "packages/egress-gate/test/dist-relay.test.ts": "5cdb9c3f6b85b43f915c72bd50590dd540cc1c00831343897f586b794bbddefd",
