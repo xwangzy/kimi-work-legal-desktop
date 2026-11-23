@@ -4,8 +4,8 @@
   "api": "kwl-cp/2",
   "monorepo": {
     "path": "platform/",
-    "commit": "a8b97d811660bfb08455ba0c662d71367c92da52",
-    "dirty": false
+    "commit": "ba23d6ee589a4df2d4ddc53121f73afbef1a226f",
+    "dirty": true
   },
   "shared_contract_packages": [
     "firm-trust",
@@ -87,7 +87,7 @@
   "files": {
     ".gitattributes": "1309c620e43001ac690b3edf1aceca1ff5b43bed2d83e53aa4ceed573d830652",
     ".github/workflows/desktop-ci.yml": "a7a837c8090df01278e8c6b1e858920b56730ae099f529f2ba7486f595220e7b",
-    ".github/workflows/windows-e2e.yml": "19cc4aad1e2048f1fc102ee1134b245a52600b5eb70c82e8b027c0f007e3c6ed",
+    ".github/workflows/windows-e2e.yml": "bb69c34b8bbb30ea6e3db7c6f3debbd2c579636287253f98e2d6749467e1f145",
     ".gitignore": "7568ea4b010a406f2af50be7034335f3d3397f1cd3e919a4a0bae297b631eb7f",
     ".nvmrc": "50b8995029fdebc8ca439031c6945518d38ab6ad38a3985c9ba386bfafebcb35",
     "apps/desktop/build/brand/Logomark_Light.svg": "a543446e0c6827bae262ec45e6bbc67cc0c9e9f446ebc86be916c082459aed25",
@@ -364,7 +364,7 @@
     "apps/desktop/vite.config.ts": "3044e9951ae59f787168813717827c9d5b811965b9e95f20ef5b889ae61566e2",
     "content/agent-profile/build-profile.mjs": "10c588fe3f83d14a314684d7f0e0dcdfe4808dec214443107e3c27b97ed9b995",
     "content/agent-profile/legal-agent.md": "de1a5db244316accf1e4532a6ea5408f77d48887ebf03cc894bdc7905d015eb0",
-    "content/dev-content-key-fingerprints.json": "090f5d332c9f8728372c21657f8b8ea0a768a2ac203fef1e86ed8bdb5360edeb",
+    "content/dev-content-key-fingerprints.json": "08582570381b5446bac8078dbe1cbaef79f529a5c8adc62b1c36a010903df5e4",
     "content/lawdb/build-increment-sample.mjs": "183e312c27a01f10ccd47714a29335db8348d2cdbdd72401c61ccb37707837e0",
     "content/lawdb/build-lawdb.mjs": "4464ede2635d9e449147ce47b0e68860a5267b25f745108c8a79dac025657b0f",
     "content/lawdb/lib/build-util.mjs": "3a7ccb95b44a178cd109bf308bc898aa12b545696dd110c7d38bee62e3f2cd9c",
@@ -454,7 +454,7 @@
     "packages/docx-engine/src/numbering.ts": "52382b692cc235446420a01ee9ce29f12404f10363b7fd1777c9f096ee9bf329",
     "packages/docx-engine/src/print-html.ts": "50a24944831a2849406887b0bba4e7cf73a558e10ebefe1a8fdf1438edb5b588",
     "packages/docx-engine/src/props.ts": "430219630db008e0f2b9899b13af626e539d7a1500ddb3826b7cd0aaa6f19601",
-    "packages/docx-engine/src/render-html.ts": "a511ba43918b64b27f7ac59f9c80031c7083d2966b6b61a8abd667bf9fe0d140",
+    "packages/docx-engine/src/render-html.ts": "3f378a59f5d33e358f1353cffaf7ad42d1dc08f3d7eab6f1032263102a276d6c",
     "packages/docx-engine/src/revise.ts": "396e735decb1ddcf3b01c60bad015ac4957031f4e33f91a47af426cd0e42fffb",
     "packages/docx-engine/src/revision-ops.ts": "ea162675287113fe3541d5688c162cedeea6f7faf007e615715eb1b5a2e2e414",
     "packages/docx-engine/src/sanitize.ts": "320afe2e49f0d8d0689f38e48acf476cd9704f7ebc994522f652d1c1bd5d9130",
@@ -476,7 +476,7 @@
     "packages/docx-engine/test/external-refs.test.ts": "4b7630a97144175ec047f76042e1f371cb1b3bf4163ff01456bf7969ac5d6149",
     "packages/docx-engine/test/house-style.test.ts": "bb6cf289ff9215d4dfd9533752c32856091bef11eb2377fa92a8c13f13b0a0c0",
     "packages/docx-engine/test/numbering.test.ts": "fc9be8858068a5f0cec57cc5f0367b195b346c1c633e085d65d063df3e4c7e79",
-    "packages/docx-engine/test/render-html.test.ts": "ca4d5c7d5a784625079799b4ddd5c281e7941cfee2254ea37929be9960f73a4e",
+    "packages/docx-engine/test/render-html.test.ts": "4f356a629b2c3851f72964373ba6bbcdc5ff064222ede1b61bcbdd42d6a2197f",
     "packages/docx-engine/test/v10-edit-keep-mark.test.ts": "947b3009492ca28964458b9dac0ffed2d120b3e7aeef47ad250042badcd27ef2",
     "packages/docx-engine/test/v10-header-footer.test.ts": "b125d63aef1fa952d4d6d13cd34041bf7afe81c7f69b18060b6910a6cb2577b0",
     "packages/docx-engine/test/v10-insert-article.test.ts": "c687ec5c58ba6d6b8e57945178b3154801b73a93f81b501dfb608cf459ceb37e",
@@ -1141,7 +1141,7 @@
     "scripts/e2e/cards/contract-review-D2.json": "940846add11bea0469d887eda17e3667170330cb970eef3712d4ba9ff0a858fe",
     "scripts/e2e/fixtures/D2/冷链智能分拣系统采购与实施合同（棠溪智能提供稿）.docx": "8eee6ecd95cdbaaca071d3de6549f78a8ce3057f3c6d35b66d8c9d51228e3312",
     "scripts/e2e/fixtures/D2/我方交易背景与底线.txt": "776fce4d7fe0345505692ec50e5b73e00f6ecdc1d9e5d2be25b434b1031de539",
-    "scripts/e2e/ui.mjs": "e0b4da0e9cad695c57e66bbdbb2fdc8c862374765403d7e63fbb5b9da1b02317",
+    "scripts/e2e/ui.mjs": "5b6ea1b0a61b105990ee20a16c5a887b8254e970e6f2c1ef495503bd537f22d8",
     "scripts/e2e/win-save-dialog.ps1": "e6020a7d3b3ff7f88eb93caa8604e9401be3dfa066c7b617a80dc584297255e0",
     "scripts/endpoint-profile.mjs": "f8ca04208d10003348adddeaeab0114d6bcff7b02a5a928b5503862e0b166fd2",
     "scripts/fetch-mac-runtime.mjs": "f5863308e41205faa17b1913967521b80cb1928676bf261c9f1d232d6dbe14ec",
