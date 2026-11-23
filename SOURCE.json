@@ -5,7 +5,7 @@
   "monorepo": {
     "path": "platform/",
     "commit": "ba23d6ee589a4df2d4ddc53121f73afbef1a226f",
-    "dirty": true
+    "dirty": false
   },
   "shared_contract_packages": [
     "firm-trust",
@@ -364,7 +364,7 @@
     "apps/desktop/vite.config.ts": "3044e9951ae59f787168813717827c9d5b811965b9e95f20ef5b889ae61566e2",
     "content/agent-profile/build-profile.mjs": "10c588fe3f83d14a314684d7f0e0dcdfe4808dec214443107e3c27b97ed9b995",
     "content/agent-profile/legal-agent.md": "de1a5db244316accf1e4532a6ea5408f77d48887ebf03cc894bdc7905d015eb0",
-    "content/dev-content-key-fingerprints.json": "08582570381b5446bac8078dbe1cbaef79f529a5c8adc62b1c36a010903df5e4",
+    "content/dev-content-key-fingerprints.json": "090f5d332c9f8728372c21657f8b8ea0a768a2ac203fef1e86ed8bdb5360edeb",
     "content/lawdb/build-increment-sample.mjs": "183e312c27a01f10ccd47714a29335db8348d2cdbdd72401c61ccb37707837e0",
     "content/lawdb/build-lawdb.mjs": "4464ede2635d9e449147ce47b0e68860a5267b25f745108c8a79dac025657b0f",
     "content/lawdb/lib/build-util.mjs": "3a7ccb95b44a178cd109bf308bc898aa12b545696dd110c7d38bee62e3f2cd9c",
