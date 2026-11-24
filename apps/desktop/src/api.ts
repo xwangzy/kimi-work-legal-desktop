@@ -6,7 +6,7 @@ import { downloadPlan } from "./lib/download.ts";
 import { GENERIC_FAILURE } from "./lib/errors.ts";
 import { ask } from "./lib/ask.ts";
 import type { KernelPreviewCard } from "./lib/accept-preview.ts";
-import type { AccountDevice, AccountSession } from "./lib/account.ts";
+import type { AccountDevice, AccountSession, RegistrationMeta } from "./lib/account.ts";
 
 declare global {
   interface Window {
@@ -793,7 +793,7 @@ export interface QuotaStatus {
   boosts?: { at: string; pct: number }[];
   unreconciled_leases?: number;
   /** 本人的使用明细（第 47 批）：本期最近 20 条，新的在前；不含请求内容。旧控制面没有该字段。 */
-  own_recent?: { at: string; kind: "qa" | "task"; alias: string | null; label: string | null; tokens_in: number; tokens_cached: number; tokens_out: number; charge: number; unit: "tokens" | "cny"; value_cny: number | null; outcome: string; partial: boolean; estimated: boolean }[];
+  own_recent?: { at: string; kind: "qa" | "task"; alias: string | null; label: string | null; tokens_in: number; tokens_cached: number; tokens_out: number; charge: number; /** 第 62 批：这一条占本人分母的比例（控制面算；客户端不用 charge 折算金额）。旧控制面没有。 */ charge_ratio?: number; unit: "tokens" | "cny"; value_cny: number | null; outcome: string; partial: boolean; estimated: boolean; /** 第 62 批：上游没给真实用量、按估算——不计入额度，待核对。 */ pending?: boolean }[];
 }
 
 /** 账号状态（第 44 批）：这台电脑上登录的是谁、是否要重新登录。 */
@@ -1535,10 +1535,14 @@ export const onboarding = {
  * 密码只经内核发给中软，渲染层不保存；登录凭据在内核里加密保存，界面拿不到。
  */
 export const account = {
-  register: (o: { email: string; password: string; name: string; org_name?: string; code?: string }) => invoke<any>("account.register", o),
+  register: (o: { email: string; password: string; name: string; org_name?: string; code?: string; phone?: string; sms_code?: string }) => invoke<any>("account.register", o),
   login: (email: string, password: string) => invoke<any>("account.login", { email, password }),
   resetRequest: (email: string) => invoke<{ ok: boolean; channel: "email" | "admin"; message?: string }>("account.reset_request", { email }),
   resetConfirm: (email: string, code: string, password: string) => invoke<{ ok: true }>("account.reset_confirm", { email, code, password }),
+  // 第 62 批：注册策略（旧云端回 legacy）、短信验证码、用手机号找回密码
+  registrationMeta: () => invoke<RegistrationMeta>("account.registration_meta"),
+  smsSend: (phone: string, purpose: "register" | "reset") => invoke<{ ok: true; phone: string | null; resend_after_s: number; expires_in_s: number; code_length: number; dry_run?: true; debug_code?: string }>("account.sms_send", { phone, purpose }),
+  resetConfirmByPhone: (phone: string, code: string, password: string) => invoke<{ ok: true }>("account.reset_confirm", { phone, code, password }),
   status: () => invoke<AccountStatus>("account.status"),
   logout: () => invoke<{ ok: true }>("account.logout"),
   me: () => invoke<AccountMe>("account.me"),
