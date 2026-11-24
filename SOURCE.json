@@ -4,7 +4,7 @@
   "api": "kwl-cp/2",
   "monorepo": {
     "path": "platform/",
-    "commit": "85d8bca4443d9e4ca15476f95996aa6aca39ceed",
+    "commit": "239f46f448399d0060167ad12fc749d716b55b73",
     "dirty": false
   },
   "shared_contract_packages": [
@@ -296,7 +296,7 @@
     "apps/desktop/test/b48-ui.test.ts": "6457e9efecff90a1dee8f199c395a73615d2b6a0f666f095d10424e0639aa64d",
     "apps/desktop/test/b49-reminders.test.ts": "f716cc07338fa2ca8bf29b9a500e890445cfcfd36f50d5cdfe335585dd87dd30",
     "apps/desktop/test/b49-ui.test.ts": "30632b1dfe96406def3e46607c714b061589d8e6de4ae6b361580686bc77e14c",
-    "apps/desktop/test/b51-ui.test.ts": "f4b10701d1b557666465db60179d60e76be9563cc06c6f4a5ff4f174e369ec83",
+    "apps/desktop/test/b51-ui.test.ts": "6e6bfdf8d2f8a5a1d29a7fb9c096723455454c0546e34d56eb381e5e167aa495",
     "apps/desktop/test/b52-connection-check.test.ts": "1906e50aba892fd63c8652f9caa8aa6c0d72e2ecbea5569ca082c28b1df3e79e",
     "apps/desktop/test/b54-kernel-diag-log.test.ts": "64b336c50f0f21614b82e91f6c868e5aba9cea4eae45519ae433eaafa96a4f33",
     "apps/desktop/test/b54-members-tampered-reject.test.ts": "23b5482c8fae554b8bb54fd0dd455bc8cae06830f9cf229f3e5c5ff87666cd5d",
@@ -1170,6 +1170,7 @@
     "scripts/dev-codesign.mjs": "aff23d641212cf87a6054e1fbdc1ded77d0ec5fa4c964184c9ebf5113b47ac3b",
     "scripts/e2e/cards/contract-review-D2.json": "940846add11bea0469d887eda17e3667170330cb970eef3712d4ba9ff0a858fe",
     "scripts/e2e/cards/pleading-L1.json": "62d9e1af8e9ba7ed8d89cbae667ca37d739c802a239cb8f4e9b33cd59ca3d277",
+    "scripts/e2e/cards/research-L1.json": "5d12715d26365c51363cd6aa62efdbca8c0b20c25fa73339f1a5dd3292f11868",
     "scripts/e2e/fixtures/D2/冷链智能分拣系统采购与实施合同（棠溪智能提供稿）.docx": "8eee6ecd95cdbaaca071d3de6549f78a8ce3057f3c6d35b66d8c9d51228e3312",
     "scripts/e2e/fixtures/D2/我方交易背景与底线.txt": "776fce4d7fe0345505692ec50e5b73e00f6ecdc1d9e5d2be25b434b1031de539",
     "scripts/e2e/fixtures/L1/01-设备买卖合同（RC-XS-2025-118）.docx": "4e4323f76ef49cbd907b6d121f676181339d77236e92621d5353f371a36cb626",
@@ -1180,7 +1181,7 @@
     "scripts/e2e/fixtures/L1/06-催款函（2026-08-18）及EMS妥投记录.docx": "9d47d19975d8ae9605bc6e0b81eae217d6d14bafd6f2bc819283b17d62c20622",
     "scripts/e2e/fixtures/L1/07-微信聊天摘录（韩启明与禾丰周宏亮）.txt": "0ad6999afb8acec7d32f655ef2d7d6cffa9f621a52dfdef6ed8158430114641c",
     "scripts/e2e/fixtures/L1/08-售后服务记录（3号机）.xlsx": "6a0184b762b25de548c04a25819df6cbef16cc8c3de8dc56bdf1f079446db233",
-    "scripts/e2e/ui.mjs": "a469b408e6fa7178d7a9adc02a9fec8ef33c3b20bb504345efdc3bae53e23454",
+    "scripts/e2e/ui.mjs": "89f3548772c97f4dabec48c75e415f2191960061ca53605db43a63d1f02a3e16",
     "scripts/e2e/win-save-dialog.ps1": "e6020a7d3b3ff7f88eb93caa8604e9401be3dfa066c7b617a80dc584297255e0",
     "scripts/endpoint-profile.mjs": "f8ca04208d10003348adddeaeab0114d6bcff7b02a5a928b5503862e0b166fd2",
     "scripts/fetch-mac-runtime.mjs": "f5863308e41205faa17b1913967521b80cb1928676bf261c9f1d232d6dbe14ec",
