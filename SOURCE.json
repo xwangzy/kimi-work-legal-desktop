@@ -4,7 +4,7 @@
   "api": "kwl-cp/2",
   "monorepo": {
     "path": "platform/",
-    "commit": "239f46f448399d0060167ad12fc749d716b55b73",
+    "commit": "5539e16851e4f83aea160b1e8ec933b418f72d6a",
     "dirty": false
   },
   "shared_contract_packages": [
@@ -89,7 +89,7 @@
   "files": {
     ".gitattributes": "1309c620e43001ac690b3edf1aceca1ff5b43bed2d83e53aa4ceed573d830652",
     ".github/workflows/desktop-ci.yml": "374fb18e76e4619f61ac942b83d1997bfd257fa3c7eda8f9ec41ac9a4e1c2330",
-    ".github/workflows/windows-e2e.yml": "a36038cc0e3a885d4956f456ad77f786940f6eaa87e9719d0952b874f6532ec5",
+    ".github/workflows/windows-e2e.yml": "0df9904e4d3198a5e22923608eed0635598e99937a181341a085df4ed0610114",
     ".gitignore": "7568ea4b010a406f2af50be7034335f3d3397f1cd3e919a4a0bae297b631eb7f",
     ".nvmrc": "50b8995029fdebc8ca439031c6945518d38ab6ad38a3985c9ba386bfafebcb35",
     "apps/desktop/build/brand/Logomark_Light.svg": "a543446e0c6827bae262ec45e6bbc67cc0c9e9f446ebc86be916c082459aed25",
