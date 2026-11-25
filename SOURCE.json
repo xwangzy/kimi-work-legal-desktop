@@ -4,7 +4,7 @@
   "api": "kwl-cp/2",
   "monorepo": {
     "path": "platform/",
-    "commit": "3e0c9e7d516d1dfac1edd198990fe08d6bccf62b",
+    "commit": "89b8cbedabb94a45a202c7bc828761ce4b66f15a",
     "dirty": false
   },
   "shared_contract_packages": [
@@ -637,7 +637,7 @@
     "packages/kap-host/src/tool-table.ts": "7229027bf9bdeb027d26d96042731b0d86e952bc73a159b1164c7f3b42a510c2",
     "packages/kap-host/src/w-domain.ts": "340b859ab107d17267fa6c7dcff2aa0057c4dfa311640790bd05d93c897ee177",
     "packages/kap-host/test/embed-drift.test.ts": "e32b2254517ff8be178339a3f98a999bf35e09b5cd47ce8f03a5a494f934ffde",
-    "packages/kap-host/test/exec-router.test.ts": "ab92390b1d8852b74721041c58f4b57488fac0ea50e9ee3677ae97fbbb488154",
+    "packages/kap-host/test/exec-router.test.ts": "911e6f6aa44d8817e64761416a975e4d1ed5414f7e014b4b2538d8a0cb467adc",
     "packages/kap-host/test/fake-model.ts": "4a6ed461749c973a8221da7e12295b5ae26c4f1f78d326dbb150e305b3f52813",
     "packages/kap-host/test/fixtures/rg15-golden.json": "ca4fdaeaa161445f8121632399c5520b211a52712ab77a8705842f8bc5b42734",
     "packages/kap-host/test/host-egress.test.ts": "08634d541f0bae8b7d6b9e64133d21fc72b8c1ccb84757ed3271cbf8bff0c390",
@@ -646,7 +646,7 @@
     "packages/kap-host/test/progress.test.ts": "bd1aab04d7a2c70a7fabf3c08f81a15b73c8cbdd3c27073f4bf1cdcedc9d5fe6",
     "packages/kap-host/test/s2-regressions.test.ts": "76d170636e917df3e79bbd57452a46560e2f7240286f7c11939bd2d97aaadc5b",
     "packages/kap-host/test/sealed-storage.test.ts": "4c0bab66439228bddb4f4ed5b534c22daf1651851cdcac2cde543f546c635f76",
-    "packages/kap-host/test/search-diff.test.ts": "db03f78670e877a8ef169cf46ef9c7f9612cc4a24189fbb0f267beefdb3422bd",
+    "packages/kap-host/test/search-diff.test.ts": "37ce7ea2ec51c759cc24558c0022d20990bf0d1337b0bb7e12825024f9a032b3",
     "packages/kap-host/test/static-surface.test.ts": "29df46006375bd32a84371d4528b7b080da678073816793b371205b639eb35f7",
     "packages/kap-host/vendor-entry/kap-embed-entry.ts": "ba03642ac7e71d3f892aeb397ecae9c14310e710b3ff5065c0f58d9e036dc133",
     "packages/kap-host/vendor/kap-embed/BUILD.json": "d8d74809baeaa741b08d57c974ee06fcb56deb8e4243bd26a22046cdbae3ca5a",
