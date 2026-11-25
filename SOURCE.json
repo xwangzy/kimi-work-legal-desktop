@@ -4,7 +4,7 @@
   "api": "kwl-cp/2",
   "monorepo": {
     "path": "platform/",
-    "commit": "288573e11c2fa575ee62c3016c099d43bc1586d7",
+    "commit": "ee807aa89836cf84c9d5875f186b38165d5210b7",
     "dirty": false
   },
   "shared_contract_packages": [
@@ -121,7 +121,7 @@
     "apps/desktop/index.html": "915c348b002356175c3e4fd40542ace6baf782d00b0c1d71465b78966db10a94",
     "apps/desktop/package.json": "2053f6c0ce45b108cadc93709d899e4f311b68822bb0953b5cb563752681c232",
     "apps/desktop/scripts/build-icons.mjs": "35ac44347f987820552899cd07e96f07fe838db3c0d2ee0679332bde1afabd86",
-    "apps/desktop/src/api.ts": "3a0828273838930af26a6bbd53c02c5a152dbc7bebff9be01537766757a254a0",
+    "apps/desktop/src/api.ts": "d741c4648a1cb3708305c2a9061c80b359d3163223ca74beea40c9dfa19167a9",
     "apps/desktop/src/App.tsx": "da884e95d5f44fec4a4fcff10dd838882fa30cd5a83582c3729ed5a7acff3a11",
     "apps/desktop/src/components/AccountPanel.tsx": "734377c8add64488a5100ebffa7656c87350d5664e39b7ee663934928d775410",
     "apps/desktop/src/components/AiNotice.tsx": "7921bb9feb96d1044d2fe7910f8afec234ce01501952be28f7b513cef2c46dab",
@@ -252,9 +252,9 @@
     "apps/desktop/src/lib/user-card.ts": "234ef62e7e68472f02b5a3a23e368d8acc96e4f7059484859769295f3b542a66",
     "apps/desktop/src/lib/waiting.ts": "cb0a657885aa524bb3a524d49c59bcd573940e217f17519fe96a4ddcee776476",
     "apps/desktop/src/lib/welcome-steps.ts": "aaa4d8400c185798c34c865571964028e27fdd4fa80d8a1e4c1c91bb4c79ba0d",
-    "apps/desktop/src/lib/window-chrome.ts": "3bf70df4927c73445eca42563b4fad2ee69e0ac1ad71c51bb2868da8aa6e4f5e",
+    "apps/desktop/src/lib/window-chrome.ts": "7310d07227743a5ccb70f98fd1f3ce90b0858139b3503de309f83fed64926550",
     "apps/desktop/src/lib/workbench.ts": "28c838ae9f2561401de8782af7d5e738db765b654552f78d24d27562275042ee",
-    "apps/desktop/src/main.tsx": "314360fd77e8017b5e5633fddb5b14044d0c015ec5750b14bcdf707f8e1587ca",
+    "apps/desktop/src/main.tsx": "677f096e76a9f5be7749f9c41ca16fff71b01cf51f1c9e7f0ebbdfc1d72c9f70",
     "apps/desktop/src/pages/Activate.tsx": "5b5a167cac8ab16e91b378bb3a42cb1ca348c78fee48b85c28b2a701aa0c271d",
     "apps/desktop/src/pages/Boards.tsx": "26c9b21f15952339a559bdb24454935c1c78efaa26a28e498d681df4352c3c33",
     "apps/desktop/src/pages/Chat.tsx": "3ed86aa6ee36bb097da128d7a71581d96404abe8e7e440dbb3238d2e155ad6c0",
@@ -539,7 +539,7 @@
     "packages/egress-gate/test/b52-connection-probe.test.ts": "312b98cad8f9aa5864999466a3dcd58dc66f7140028f7ccfd92ec7c16927686c",
     "packages/egress-gate/test/b60-gate-refusal.test.ts": "220a2b04ac6dae70b6ad854921798b19989bdf302793d990691f7706aca32d9e",
     "packages/egress-gate/test/cp-relay.test.ts": "e38dd9f606a38fb93f6ec89f8e83b8427b06c45ceae1003ba7bafd3a69d0ed57",
-    "packages/egress-gate/test/desktop-surface.test.ts": "4565f59d440807040fc38c0fc0857bee23196c057d1b321e6a70560887eded0c",
+    "packages/egress-gate/test/desktop-surface.test.ts": "cc1c692b2332f713c01434520ddca305e77200bde0d395ba4047fc47a92cd659",
     "packages/egress-gate/test/dist-relay.test.ts": "5cdb9c3f6b85b43f915c72bd50590dd540cc1c00831343897f586b794bbddefd",
     "packages/egress-gate/test/fixtures/demo-ca.pem": "5e5b387359d49d73f1c975888a967909dc2f552ffff697b118e99b7bd9cce196",
     "packages/egress-gate/test/fixtures/demo-leaf-dns.key.pem": "a86bcb0bf962bd183bf16abd8c4bf7fe5d95fdf055278228505c423219d2bc17",
