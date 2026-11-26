@@ -1,0 +1,209 @@
+/* 起草前确认论点与依据（第 67 批 V41 工作线 A）：卡头（标题 + 一句话 + 一行汇总）→ 论点列表（结论信号 + 三选一，展开看依据与事实）→ 固定操作区。
+ * 一层带边框容器（14px），容器内只用间距与 1px 分隔线；状态一律“色点 + 文字”：绿 = 已核 / 已确认，橙 = 要你看，红 = 依据有问题，灰 = 不需证明。
+ * 只用令牌（门禁 style-tokens.test.ts）。 */
+.card-confirm.oc {
+  gap: 0;
+  padding: 0;
+  margin-top: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-left: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+  box-shadow: none;
+  /* 按卡片自身宽度换排法（右栏展开、小窗口时卡片会窄到 500px 上下，视口宽度判断不出来） */
+  container-type: inline-size;
+  /* 不设 overflow：overflow:hidden 会让卡片自成滚动容器，底部操作区的 sticky 就贴不住视口（第 66 批主按钮不在首屏的根因） */
+}
+
+/* 状态色点（全卡通用） */
+.oc .oc-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--text-label); }
+.oc .tone-ok > .oc-dot, .oc .oc-dot.tone-ok { background: var(--status-success-solid); }
+.oc .tone-warn > .oc-dot { background: var(--status-warning-solid); }
+.oc .tone-risk > .oc-dot { background: var(--status-danger-solid); }
+.oc .tone-gray > .oc-dot { background: var(--border-strong); }
+
+/* 小工具按钮（规则、全部展开、条文原文、逐条看、补充要求）：中性灰文字，悬停加底 */
+.oc-tool { display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 8px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--text-secondary); font-size: var(--fs-caption); white-space: nowrap; cursor: pointer; }
+.oc-tool:hover { background: var(--bg-hover); color: var(--text-primary); }
+.oc-tool:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus-glow); }
+.oc-tool svg { width: 14px; height: 14px; }
+
+/* 卡头 */
+.oc-head { padding: var(--sp-4) var(--sp-5) var(--sp-3); }
+.oc-title-row { display: flex; align-items: center; gap: var(--sp-2); }
+.oc-title { margin: 0; flex: 1; min-width: 0; font-size: var(--fs-md); font-weight: 600; color: var(--text-strong); }
+.oc-head-tools { flex: none; display: flex; align-items: center; gap: 2px; margin-right: -8px; }
+.card-confirm.oc .oc-why { margin: var(--sp-1) 0 0; font-size: var(--fs-caption); line-height: 1.6; color: var(--text-secondary); }
+.oc-overview { display: flex; flex-wrap: wrap; gap: var(--sp-1) var(--sp-4); margin-top: var(--sp-3); }
+.oc-ov { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; padding: 2px 0; font-size: var(--fs-caption); color: var(--text-primary); }
+button.oc-ov { cursor: pointer; }
+button.oc-ov:hover { text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--border-strong); }
+.oc-ov.tone-ok { color: var(--status-success-text); }
+
+/* 规则弹出说明 */
+.oc-rules { position: relative; }
+.oc-rules-pop { position: absolute; right: 0; top: calc(100% + 6px); z-index: 5; width: 340px; padding: var(--sp-3) var(--sp-4); border-radius: var(--r-lg); background: var(--bg-elevated); border: 1px solid var(--border-subtle); box-shadow: var(--shadow-md); font-size: var(--fs-caption); line-height: 1.6; color: var(--text-primary); animation: oc-pop 140ms var(--ease-out-soft) both; }
+@keyframes oc-pop { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; transform: none; } }
+.oc-rules-list { margin: 0; padding-left: 1.1em; display: flex; flex-direction: column; gap: 4px; }
+.oc-legend { list-style: none; margin: var(--sp-3) 0 0; padding: var(--sp-3) 0 0; border-top: 1px solid var(--border-subtle); display: flex; flex-direction: column; gap: 6px; color: var(--text-secondary); }
+.oc-legend li { display: flex; align-items: baseline; gap: 6px; }
+.oc-legend .oc-dot { transform: translateY(-2px); }
+.oc-legend b { flex: none; font-weight: 500; color: var(--text-primary); min-width: 6em; }
+
+/* 论点列表 */
+/* styles.css 的旧 .outline-list 是 flex + 12px 间距：这里改回普通块，行距只由行内边距决定 */
+.oc-list.outline-list { display: block; list-style: none; margin: 0; padding: 0 var(--sp-3); border-top: 1px solid var(--border-subtle); }
+/* 分隔线画在行内侧（伪元素），展开行的圆角底色不会把分隔线弯成弧 */
+.oc-arg { position: relative; padding: var(--sp-3); border-radius: 0; }
+.oc-arg + .oc-arg::before { content: ""; position: absolute; top: 0; left: var(--sp-3); right: var(--sp-3); height: 1px; background: var(--border-subtle); }
+.oc-arg.open { background: var(--bg-subtle); border-radius: var(--r-md); margin: var(--sp-1) 0; }
+.oc-arg.open::before, .oc-arg.open + .oc-arg::before { display: none; }
+.oc-arg-head { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; column-gap: var(--sp-3); align-items: start; }
+.oc-n { width: 22px; height: 22px; margin-top: 1px; border-radius: var(--r-full); display: grid; place-items: center; font-size: var(--fs-xs); font-variant-numeric: tabular-nums; color: var(--text-secondary); background: var(--bg-muted); }
+.oc-claim { min-width: 0; }
+.oc-claim-text { margin: 0; font-size: var(--fs-body); line-height: 1.65; font-weight: 500; color: var(--text-strong); }
+.oc-edited { display: inline-block; margin-left: var(--sp-2); padding: 0 6px; border-radius: var(--r-xs); font-size: var(--fs-xs); line-height: 18px; font-weight: 400; color: var(--text-secondary); background: var(--bg-muted); vertical-align: 1px; cursor: help; }
+.oc-edit textarea { width: 100%; font-size: var(--fs-body); line-height: 1.6; resize: vertical; }
+.oc-edit-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); margin-top: 2px; font-size: var(--fs-xs); color: var(--text-label); }
+.oc-edit-foot .oc-tool { height: 24px; }
+
+/* 结论信号：色点 + 结论词 + 最要紧的一件事；整行可点，展开依据与事实 */
+.oc-verdict { position: relative; grid-column: 2 / -1; display: flex; align-items: baseline; gap: 6px; width: calc(100% + 12px); margin: 2px 0 0 -6px; padding: 3px 6px; border: 0; border-radius: var(--r-sm); background: transparent; text-align: left; font-size: var(--fs-caption); line-height: 1.55; color: var(--text-secondary); cursor: pointer; }
+.oc-verdict:hover { background: var(--bg-hover); }
+.oc-arg.open .oc-verdict:hover { background: var(--bg-hover); }
+.oc-verdict:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus-glow); }
+.oc-verdict .oc-dot { transform: translateY(-2px); }
+.oc-verdict-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.oc-verdict-issue { flex: 1; min-width: 0; color: var(--text-primary); }
+.oc-verdict.tone-ok .oc-verdict-issue { color: var(--status-success-text); }
+.oc-verdict.tone-risk .oc-verdict-issue { color: var(--status-danger-text); font-weight: 500; }
+.oc-verdict-more { color: var(--text-secondary); }
+.oc-verdict-risk { flex: none; margin-left: var(--sp-2); font-size: var(--fs-xs); color: var(--text-secondary); white-space: nowrap; }
+.oc-verdict-risk.is-none { color: var(--text-label); }
+.oc-verdict-go { flex: none; display: inline-flex; align-items: center; gap: 2px; margin-left: var(--sp-2); color: var(--text-label); font-size: var(--fs-xs); }
+.oc-verdict:hover .oc-verdict-go { color: var(--text-secondary); }
+.oc-verdict.is-off { cursor: default; color: var(--text-label); }
+.oc-chev { display: inline-flex; transition: transform var(--motion-fast) var(--ease-standard); }
+.oc-chev svg { width: 14px; height: 14px; }
+.oc-chev.up { transform: rotate(180deg); }
+
+/* 采用 / 改写 / 不用（三选一） */
+/* 负外边距：三选一比论点首行高 6px，不让它把首行撑高、拉开论点与结论信号的距离 */
+.oc-seg { display: inline-flex; gap: 2px; padding: 2px; margin: -3px 0; border-radius: var(--r-md); background: var(--bg-muted); }
+.oc-seg-btn { height: 26px; padding: 0 10px; border: 1px solid transparent; border-radius: var(--r-sm); background: transparent; font-size: var(--fs-caption); color: var(--text-secondary); white-space: nowrap; cursor: pointer; transition: background var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard); }
+.oc-seg-btn:hover:not([aria-checked="true"]):not(:disabled) { color: var(--text-primary); }
+/* 第二轮评审：选中态要一眼可见，但不和黑色主按钮抢——白底 + 深灰描边 + 加粗 */
+.oc-seg-btn[aria-checked="true"] { background: var(--bg-surface); border-color: var(--border-strong); color: var(--text-primary); font-weight: 600; }
+.oc-seg-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus-glow); }
+.oc-seg-btn:disabled { cursor: default; opacity: 0.6; }
+.oc-arg.open .oc-seg { background: var(--bg-hover); }
+
+/* “不用”整行降到最浅一级文字色并划掉（门禁 S8B-06：opacity < 1 只给禁用态，这里用颜色） */
+.oc-dropped .oc-claim-text { color: var(--text-label); text-decoration: line-through; text-decoration-color: var(--text-label); font-weight: 400; }
+.oc-dropped .oc-n { color: var(--text-label); background: transparent; box-shadow: inset 0 0 0 1px var(--border-subtle); }
+
+/* 展开的细节：法律依据 → 事实依据 → 风险提示 */
+.oc-detail { margin: var(--sp-3) 0 var(--sp-1) 34px; display: flex; flex-direction: column; gap: var(--sp-4); }
+.oc-sec { min-width: 0; }
+.oc-sec + .oc-sec { padding-top: var(--sp-4); border-top: 1px solid var(--border-subtle); }
+.oc-sec-h { display: flex; align-items: baseline; gap: var(--sp-2); margin: 0 0 var(--sp-2); font-size: var(--fs-xs); font-weight: 500; color: var(--text-secondary); letter-spacing: 0.02em; }
+.oc-sec-n { font-weight: 400; color: var(--text-label); font-variant-numeric: tabular-nums; }
+.oc-k { flex: none; margin-right: var(--sp-2); font-size: var(--fs-xs); color: var(--text-label); }
+
+.oc-laws.outline-basis { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-2); }
+.oc-law-item { display: flex; flex-direction: column; gap: 2px; }
+.oc-law-row { display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--sp-3); min-height: 28px; }
+.oc-check { display: inline-flex; align-items: flex-start; gap: var(--sp-2); cursor: pointer; }
+.oc-check input { flex: none; margin: 3px 0 0; }
+.oc-law { font-size: var(--fs-body); font-weight: 500; color: var(--text-strong); }
+.oc-law-item.outline-dropped .oc-law { color: var(--text-label); text-decoration: line-through; font-weight: 400; }
+.oc-state { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-xs); color: var(--text-secondary); cursor: help; }
+.oc-state.tone-ok { color: var(--status-success-text); }
+.oc-state.tone-warn { color: var(--status-warning-text); }
+.oc-state.tone-risk { color: var(--status-danger-text); }
+.oc-mode { font-size: var(--fs-xs); color: var(--text-secondary); }
+.oc-mode.tone-warn { color: var(--status-warning-text); }
+.oc-article-btn { margin-left: auto; height: 24px; font-size: var(--fs-xs); }
+.oc-law-why, .oc-law-warn { margin: 0 0 0 22px; font-size: var(--fs-caption); line-height: 1.6; color: var(--text-primary); }
+.oc-law-warn.tone-warn { color: var(--status-warning-text); }
+.oc-law-warn.tone-risk { color: var(--status-danger-text); }
+.oc .outline-article { margin: var(--sp-1) 0 0 22px; padding: var(--sp-2) var(--sp-3); border-left: 2px solid var(--border-strong); background: var(--bg-surface); border-radius: 0 var(--r-sm) var(--r-sm) 0; font-family: var(--font-doc); font-size: var(--fs-caption); line-height: 1.75; color: var(--text-primary); }
+
+.oc-el-group + .oc-el-group { margin-top: var(--sp-2); }
+.oc-el-group-h { margin-bottom: 2px; font-size: var(--fs-xs); color: var(--text-label); }
+.oc-elements.outline-elements { list-style: none; margin: 0; padding: 0; }
+.oc-el { display: flex; align-items: baseline; gap: var(--sp-2); padding: 3px 0; font-size: var(--fs-caption); line-height: 1.55; }
+.oc-el .oc-dot { transform: translateY(-2px); }
+.oc-el-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.oc-el-text { color: var(--text-primary); }
+/* 支撑这个要件的事实原文：一行灰字，超出省略，悬停看全文 */
+.oc-el-fact { font-size: var(--fs-xs); line-height: 1.6; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oc .outline-elements .outline-element { margin: 0; }
+.oc-el-ev { flex: none; max-width: 45%; display: inline-flex; align-items: baseline; gap: 6px; font-size: var(--fs-xs); color: var(--text-secondary); text-align: right; }
+.oc-el-ev.tone-ok { color: var(--status-success-text); }
+.oc-el-ev.tone-warn { color: var(--status-warning-text); }
+.oc-el-ref { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.oc-el.tone-warn .oc-el-text { color: var(--text-strong); }
+
+.oc-facts.outline-facts { list-style: none; margin: var(--sp-3) 0 0; padding: var(--sp-2) 0 0; border-top: 1px dashed var(--border-subtle); display: flex; flex-direction: column; gap: 4px; }
+.oc-facts li { display: flex; align-items: baseline; gap: var(--sp-2); font-size: var(--fs-caption); line-height: 1.6; }
+.oc-facts.is-only { margin-top: 0; padding-top: 0; border-top: 0; }
+.oc-facts li.oc-facts-h { font-size: var(--fs-xs); color: var(--text-label); }
+.oc-fact-n { flex: none; font-size: var(--fs-xs); color: var(--text-label); font-variant-numeric: tabular-nums; min-width: 3.2em; }
+.oc-fact-text { flex: 1; min-width: 0; color: var(--text-primary); }
+.oc-fact-state { flex: none; font-size: var(--fs-xs); color: var(--text-label); }
+.oc-fact-state.tone-ok { color: var(--status-success-text); }
+.oc-fact-state.tone-warn { color: var(--status-warning-text); }
+
+.oc-risks { margin: 0; padding-left: var(--sp-3); border-left: 2px solid var(--status-warning-border); display: flex; flex-direction: column; gap: var(--sp-2); }
+.oc-risk-none { margin: 0; font-size: var(--fs-caption); line-height: 1.6; color: var(--text-label); }
+.oc-risk dt { font-size: var(--fs-xs); color: var(--text-label); }
+.oc-risk dd { margin: 1px 0 0; font-size: var(--fs-caption); line-height: 1.6; color: var(--text-primary); }
+
+/* 固定操作区 */
+/* bottom 取负的任务页底部内边距（.exec-mid 32px）：sticky 以滚动区内容框为界，不抵消会在操作区下面露出 32px 正文 */
+.oc-foot { position: sticky; bottom: calc(-1 * var(--sp-6)); z-index: 2; display: flex; flex-direction: column; gap: var(--sp-2); padding: var(--sp-3) var(--sp-5) var(--sp-4); border-top: 1px solid var(--border-subtle); border-radius: 0 0 var(--r-lg) var(--r-lg); background: var(--bg-surface); }
+/* 贴底时：上沿一道淡阴影、去掉底部圆角——读作页面底部的操作栏（卡片本身不滚动） */
+.oc-foot.is-stuck { border-radius: 0; box-shadow: 0 -10px 16px -14px var(--border-strong); }
+.oc-end { height: 1px; margin-top: -1px; }
+.oc-facts-confirm { display: flex; flex-direction: column; gap: 2px; }
+.oc-facts-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); }
+.oc-foot .outline-facts-confirm { font-size: var(--fs-caption); line-height: 1.6; color: var(--text-primary); }
+.oc-facts-row .oc-tool { height: 24px; font-size: var(--fs-xs); }
+.oc-facts-hint { margin: 0 0 0 22px; font-size: var(--fs-xs); line-height: 1.5; color: var(--text-label); }
+.oc-pending { margin: var(--sp-1) 0 0 22px; padding: var(--sp-2) var(--sp-3) var(--sp-2) calc(var(--sp-3) + 1.2em); max-height: 180px; overflow: auto; border-radius: var(--r-sm); background: var(--bg-subtle); font-size: var(--fs-caption); line-height: 1.6; }
+.oc-pending li + li { margin-top: 4px; }
+.oc-pending-args { margin-left: var(--sp-2); font-size: var(--fs-xs); color: var(--text-label); white-space: nowrap; }
+.oc-note { width: 100%; resize: vertical; font-size: var(--fs-caption); }
+.oc-actions.cc-actions { align-items: center; gap: var(--sp-2); margin-top: 0; }
+.oc-note-btn { margin-left: -8px; }
+.oc-actions-sum { margin-left: auto; font-size: var(--fs-caption); color: var(--text-secondary); }
+
+@container (max-width: 600px) {
+  .oc-head, .oc-foot { padding-left: var(--sp-4); padding-right: var(--sp-4); }
+  .oc-list.outline-list { padding: 0 var(--sp-1); }
+  .oc-arg-head { grid-template-columns: 22px minmax(0, 1fr); }
+  .oc-seg { grid-column: 2; grid-row: 2; justify-self: start; margin-top: var(--sp-2); }
+  .oc-verdict { grid-row: 3; grid-column: 2; }
+  .oc-detail { margin-left: 0; }
+  .oc-el { flex-wrap: wrap; }
+  .oc-el-ev { max-width: none; margin-left: 14px; }
+  .oc-rules-pop { width: min(340px, calc(100vw - 48px)); }
+}
+
+/* 与论点卡同卡的提问卡（Cards.tsx outlineLock，第 67 批）：论点那题收成一行状态，作答处是上方论点卡；其余的题照常 */
+.card-question .q-lock { display: flex; flex-wrap: wrap; align-items: center; gap: 6px var(--sp-2); margin: var(--sp-2) 0 var(--sp-1); padding: 6px var(--sp-3); border-radius: var(--r-sm); background: var(--bg-subtle); font-size: var(--fs-caption); line-height: 1.5; color: var(--text-secondary); }
+.q-lock-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--status-warning-solid); }
+.q-lock.is-done .q-lock-dot { background: var(--status-success-solid); }
+.q-lock.is-done .q-lock-text { color: var(--status-success-text); }
+.q-lock-text { flex: 1; min-width: 0; }
+/* 第二轮评审：同卡提问卡的选项与论点卡同一套中性语言——选中是深色细描边 + 浅底（不用蓝框），选项等宽，“确定 / 跳过”在底部右对齐（主按钮在最右） */
+.card-question.has-outline-lock .q-options { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
+.card-question.has-outline-lock .q-option { width: 100%; }
+.card-question.has-outline-lock .q-option.on, .card-question.has-outline-lock .q-option.on:hover { border: 1px solid var(--text-primary); background: var(--bg-subtle); padding: 6px 10px; }
+.card-question.has-outline-lock .cc-actions { flex-direction: row-reverse; justify-content: flex-start; padding-top: var(--sp-3); border-top: 1px solid var(--border-subtle); }
+.card-confirm.card-question.has-outline-lock { border: 1px solid var(--border-subtle); border-left: 1px solid var(--border-subtle); }
+.card-question.has-outline-lock .q-mark { color: var(--text-primary); }
+/* 第三轮评审：“先不起草”放在按钮区最左（文字按钮，中性灰），与“跳过 / 确定”分开 */
+.card-question.has-outline-lock .q-stop { margin-right: auto; padding: 0 4px; color: var(--text-secondary); }
+.card-question.has-outline-lock .q-stop:hover:not(:disabled) { color: var(--text-primary); text-decoration: underline; text-underline-offset: 3px; }
