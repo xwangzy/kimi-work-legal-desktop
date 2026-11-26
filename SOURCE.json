@@ -4,7 +4,7 @@
   "api": "kwl-cp/2",
   "monorepo": {
     "path": "platform/",
-    "commit": "62e7ae91cf1f7671df9ad3d6267418a68cde614d",
+    "commit": "5f0290d9829a3e1b6dec9d2b4ca2533a4ac742b9",
     "dirty": false
   },
   "shared_contract_packages": [
@@ -352,6 +352,7 @@
     "apps/desktop/test/b68-preview-canvas.test.ts": "f984dca618c5e1921bb0a877b933fe17745eb5c8b5a65402ff7f61226f91f63b",
     "apps/desktop/test/b69-auth-ui.test.ts": "4a71ed39708b2d5737561905f618e2baec7cb83db06c99c4689fed23ae851636",
     "apps/desktop/test/b69-usage-page.test.ts": "563a0965f56f14ca17b3ee22688911867867e4e3532635c36eba1b9ee624d330",
+    "apps/desktop/test/b70-e2e-cards.test.ts": "ca6c1c5e6f1b235e947b45cf99892c8aecbc1efeb67f3673115ad2095687dffd",
     "apps/desktop/test/b70-polish.test.ts": "1556f58bb083aabc2fb1a7a85d315ac99a3f98d85d411dcf9dfe682924b34c1c",
     "apps/desktop/test/batch10-lib.test.ts": "31964ae9f7131f947acb9ece8313385bd78ac9d782e88a6140d9628a94beaa84",
     "apps/desktop/test/batch11-lib.test.ts": "00750e3639acbdfd48bc8b9a7b10280da37e094c4a830ad42c83a76b670417bb",
@@ -1243,7 +1244,7 @@
     "scripts/build-runtime.mjs": "292620b66314b8724fdfd38eae5293da635e9908ceb2d1324e882a9644c85697",
     "scripts/ci/check-smoke.mjs": "d756428085c1dceacb3c7f9b68b12aae3a90120d9ef634c2d0e2897216df44bc",
     "scripts/dev-codesign.mjs": "aff23d641212cf87a6054e1fbdc1ded77d0ec5fa4c964184c9ebf5113b47ac3b",
-    "scripts/e2e/cards/contract-review-D2.json": "940846add11bea0469d887eda17e3667170330cb970eef3712d4ba9ff0a858fe",
+    "scripts/e2e/cards/contract-review-D2.json": "93cb8a656e1dcf9378553eac8d248e13af40cb90f4aaf34b479f1efbfc5c8753",
     "scripts/e2e/cards/litigation-budget-L1.json": "74d958406036044e9eafb6868e7cec2dcad34bee5715cd28cc191287f59ead94",
     "scripts/e2e/cards/pleading-L1.json": "62d9e1af8e9ba7ed8d89cbae667ca37d739c802a239cb8f4e9b33cd59ca3d277",
     "scripts/e2e/cards/research-L1.json": "5d12715d26365c51363cd6aa62efdbca8c0b20c25fa73339f1a5dd3292f11868",
