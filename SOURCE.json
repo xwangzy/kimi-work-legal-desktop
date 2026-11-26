@@ -4,7 +4,7 @@
   "api": "kwl-cp/2",
   "monorepo": {
     "path": "platform/",
-    "commit": "ba30769e31b1e4169d5fb1ec85921d05655af551",
+    "commit": "1fe8e2d362566b4db3d311374a23e0b413cfdd20",
     "dirty": false
   },
   "shared_contract_packages": [
@@ -1269,7 +1269,7 @@
     "scripts/e2e/fixtures/L1/06-催款函（2026-08-18）及EMS妥投记录.docx": "9d47d19975d8ae9605bc6e0b81eae217d6d14bafd6f2bc819283b17d62c20622",
     "scripts/e2e/fixtures/L1/07-微信聊天摘录（韩启明与禾丰周宏亮）.txt": "0ad6999afb8acec7d32f655ef2d7d6cffa9f621a52dfdef6ed8158430114641c",
     "scripts/e2e/fixtures/L1/08-售后服务记录（3号机）.xlsx": "6a0184b762b25de548c04a25819df6cbef16cc8c3de8dc56bdf1f079446db233",
-    "scripts/e2e/ui.mjs": "050c472b89c20bd9c09a55e6dcfa9593179f1f194a4d7a0ce1beaa0241484e97",
+    "scripts/e2e/ui.mjs": "5a48e1310c12a190ccb1d8aad175945ec13b0f6b4b99320d58248da28dbbe154",
     "scripts/e2e/win-save-dialog.ps1": "e6020a7d3b3ff7f88eb93caa8604e9401be3dfa066c7b617a80dc584297255e0",
     "scripts/endpoint-profile.mjs": "f8ca04208d10003348adddeaeab0114d6bcff7b02a5a928b5503862e0b166fd2",
     "scripts/fetch-mac-runtime.mjs": "f5863308e41205faa17b1913967521b80cb1928676bf261c9f1d232d6dbe14ec",
