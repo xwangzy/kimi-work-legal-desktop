@@ -4,7 +4,7 @@
   "api": "kwl-cp/2",
   "monorepo": {
     "path": "platform/",
-    "commit": "9414bc6a4d63c8415d16209cd0749435546cc19e",
+    "commit": "c285d3c66082b09ba4cd8ec9ddb414d9e7a6a77b",
     "dirty": false
   },
   "shared_contract_packages": [
@@ -173,7 +173,7 @@
     "apps/desktop/src/components/MatterHeader.tsx": "dc752196d8245b3383599903fa39cb931144fc546dbf56e6d83afa843789c822",
     "apps/desktop/src/components/MatterLifecycle.tsx": "b875c516d3208ad2229f534714057952fabd4dc4afab163520b2feeac27808b6",
     "apps/desktop/src/components/MatterOverview.tsx": "16ba88162887f722f7dfbd03f2ee79ea743c1831e9a63fbc09d6810f141b9a42",
-    "apps/desktop/src/components/MatterPlace.tsx": "01a85cab234b70f8b0f864ad80337dc5a5e3e8a775e249c1d0461866fd7fa783",
+    "apps/desktop/src/components/MatterPlace.tsx": "efd17ca87bc3d283223212731799ca4907ad75609a65be700ed87dbd99e23b9a",
     "apps/desktop/src/components/MatterSetup.tsx": "25c05c3ed1ab0c0a0fb1a4810cd2c2652333164d31d85a362c5941d8280097f5",
     "apps/desktop/src/components/MembersAdmin.tsx": "376310dc100910b79009c391563169c7dd93fca43805134cac42b46f3c8410fd",
     "apps/desktop/src/components/Modal.tsx": "d902b443f24514b164a608024f948895a247e6dfe015abff158b2930c4f8c21e",
