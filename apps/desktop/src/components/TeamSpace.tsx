@@ -11,11 +11,13 @@ import { nav } from "../App.tsx";
 import { fmtPct } from "../lib/firm-usage.ts";
 import { offboardingSummary } from "../lib/offboarding.ts";
 import { personalView } from "../lib/personal-usage.ts";
-import { formatInviteCode, inviteCodeComplete, KIND_LABEL, LEFT_NOTICE_KEY, leaveLines, teamErrorText, teamNameOk, upgradeLines, workspaceRoleTag, WS_ROLE_LABEL } from "../lib/workspace.ts";
+import { formatInviteCode, inviteCodeComplete, KIND_LABEL, leaveLines, teamErrorText, teamNameOk, upgradeLines, workspaceRoleTag, WS_ROLE_LABEL } from "../lib/workspace.ts";
 import { Icon } from "./Icons.tsx";
 import { Modal } from "./Modal.tsx";
 import { SettingRow } from "./SettingRow.tsx";
 import { notifyWorkspaceChanged, useSwitchFlow, type WorkspaceState } from "./WorkspaceSwitch.tsx";
+/** 第 72 批（C16）：被移出 / 退出团队后在另一个工作空间提示一次（登记在 docs/privacy/residency.json；键须是本文件里的字面量）。 */
+const LEFT_NOTICE_KEY = "kwl.ws.left-notice";
 
 /** 侧栏菜单“加入团队…”：到设置 · 账号并把光标放进邀请码框。 */
 const JOIN_EVENT = "kwl:join-team";
@@ -269,7 +271,7 @@ export function TeamHeader({ ws, children }: { ws: WorkspaceState; children?: Re
       {!ws.features.teamRead && (
         <p className="team-privacy" role="note">
           {Icon.lock()}
-          <span>事项内容只在成员自己的电脑上，管理员看不到；要一起办，在事项里开启团队共享。</span>
+          <span>事项内容只在成员自己的电脑上，管理员看不到；团队共享事项需要所内先配置共享通道。</span>
         </p>
       )}
       {children}
