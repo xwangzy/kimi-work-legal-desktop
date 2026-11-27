@@ -4322,15 +4322,27 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
       const devRows = db.all<{ device_id: string; member_id: string; created_at: string }>(`SELECT device_id, member_id, created_at FROM devices WHERE tenant_id = ? ORDER BY created_at`, [id.tenantId]);
       const devOf = new Map(devRows.map((d) => [d.device_id, d]));
       const session = deps.account?.session() ?? null;
-      const nameOfMember = (memberId: string): string | null => displayNameOf(memberId, null) ?? (memberId === id.userId && session?.name ? session.name : null);
+      // 第 72 批（设计评分第三轮 C10）：团队成员名单（见下）另按成员编号、电脑编号、席位编号、这个人的主账号编号对上姓名——
+      // 由账号签发钥直接登记的成员电脑不在本机设备表里、凭团队邀请加入的成员本机没有姓名、加入 / 切换记在这个人的主账号上，原来都解析不出、只能写“成员（编号 xxxx）”
+      const rosterMember = new Map<string, string>();
+      const rosterDevice = new Map<string, { name: string; n: number; of: number }>();
+      const rosterSeat = new Map<string, string>();
+      const nameOfMember = (memberId: string): string | null => {
+        const local = displayNameOf(memberId, null);
+        // “加进事项”时以成员编号作显示名的占位行不算姓名
+        return (local && local !== memberId ? local : null) ?? rosterMember.get(memberId) ?? (memberId === id.userId && session?.name ? session.name : null);
+      };
       const nameOfDevice = (deviceId: string): string | null => {
         const d = devOf.get(deviceId);
-        return d ? nameOfMember(d.member_id) : null;
+        return (d ? nameOfMember(d.member_id) : null) ?? rosterDevice.get(deviceId)?.name ?? null;
       };
       /** 这台电脑是本人登记的第几台（1 起；只有一台时界面不写“第几台”）。 */
       const ordinalOfDevice = (deviceId: string): { n: number; of: number } | null => {
         const d = devOf.get(deviceId);
-        if (!d) return null;
+        if (!d) {
+          const r = rosterDevice.get(deviceId);
+          return r ? { n: r.n, of: r.of } : null;
+        }
         const mine = devRows.filter((x) => x.member_id === d.member_id);
         return { n: mine.findIndex((x) => x.device_id === deviceId) + 1, of: mine.length };
       };
@@ -4339,8 +4351,17 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
       const roster = new Map<string, string>();
       try {
         if (deps.controlPlane && deps.account && ((await deps.account.features?.()) ?? []).includes("workspaces")) {
-          const r = (await deps.controlPlane.account("GET", "/v1/firm/members")) as { members?: { aid?: unknown; name?: unknown }[] };
-          for (const m of r?.members ?? []) if (typeof m.aid === "string" && typeof m.name === "string" && m.name.trim()) roster.set(m.aid, m.name.trim().slice(0, 40));
+          const r = (await deps.controlPlane.account("GET", "/v1/firm/members")) as { members?: { aid?: unknown; name?: unknown; person_aid?: unknown; member_slug?: unknown; seat?: { sid?: unknown } | null; devices?: { device_id?: unknown }[] }[] };
+          for (const m of r?.members ?? []) {
+            if (typeof m.aid !== "string" || typeof m.name !== "string" || !m.name.trim()) continue;
+            const nm = m.name.trim().slice(0, 40);
+            roster.set(m.aid, nm);
+            if (typeof m.person_aid === "string" && !roster.has(m.person_aid)) roster.set(m.person_aid, nm);
+            if (typeof m.member_slug === "string") rosterMember.set(`usr_${config.firmSlug}_${m.member_slug}`, nm);
+            if (typeof m.seat?.sid === "string") rosterSeat.set(m.seat.sid, nm);
+            const devs = (Array.isArray(m.devices) ? m.devices : []).map((x) => x?.device_id).filter((x): x is string => typeof x === "string");
+            devs.forEach((dv, i) => rosterDevice.set(dv, { name: nm, n: i + 1, of: devs.length }));
+          }
         }
       } catch {
         // 名单取不到不影响操作记录本身
@@ -4386,6 +4407,8 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
             } else if (SEAT_OF_ACTOR.has(r.action) && actor_name) {
               target_name = actor_name;
               target_is_me = actor_is_me;
+            } else if (rosterSeat.has(r.target)) {
+              target_name = rosterSeat.get(r.target)!;
             }
           } else if (r.target && target_kind === "account") {
             target_name = nameOfAccount(r.target);
@@ -4444,7 +4467,7 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
       if (!deps.governance) throw notFound("公钥变更");
       const r = deps.governance.confirmKeyChange(String(p?.device_id ?? ""), String(p?.safety_code ?? ""), id.userId);
       if (!r.ok) throw validation(r.reason);
-      return { ok: true, note: "已核对本机核对码，换用对方电脑的新密钥：此后本机交给这台电脑的事项密钥用新密钥加密" };
+      return { ok: true, note: "已核对本机识别码，换用对方电脑的新密钥：此后本机交给这台电脑的事项密钥用新密钥加密" };
     },
 
     // ─── 设备与密钥纪元（§5.3：吊销设备证书 → tenant 纪元递增；撤权校验不依赖时钟） ───
@@ -5651,7 +5674,8 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
         if (!(await has("workspaces"))) return unsupported();
         const j = await accountCp(() => cp.account("POST", "/v1/workspace/upgrade", { name }));
         // 本机状态随即改为团队（界面据 workspace_kind 显示团队功能）；许可与策略随下一次同步更新，这里立即同步一次
-        deps.account?.noteMeta?.({ workspace: { kind: kindOf((j.workspace as { kind?: unknown } | undefined)?.kind) ?? "team" } });
+        // 第 72 批（复测 N8）：连同新名称一起记下（本机律所名称随之改为团队名，对外文书署名等读它）
+        deps.account?.noteMeta?.({ workspace: { kind: kindOf((j.workspace as { kind?: unknown } | undefined)?.kind) ?? "team", tid: id.tenantId, name: typeof (j.workspace as { name?: unknown } | undefined)?.name === "string" ? (j.workspace as { name: string }).name : name } });
         audit(db, id, "workspace.upgrade_team", "tenant", id.tenantId, sha256Hex(name), keyctx);
         void cp.sync().catch(() => undefined);
         return { ok: true, ...(j.workspace && typeof j.workspace === "object" ? { workspace: j.workspace } : {}) };
@@ -5743,7 +5767,7 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
         requireCpAccount();
         const ds = deps.deviceShare;
         if (!ds) return unsupported();
-        if (ds.issuer() === "firm_root") return { supported: true, state: "confirmed", issuer: "firm_root" };
+        if (ds.issuer() === "firm_root") return { supported: true, ...ds.confirmedView() };
         if (!(await has("device_share_confirm"))) return unsupported({ issuer: ds.issuer() });
         return { supported: true, ...(await ds.status()) };
       },

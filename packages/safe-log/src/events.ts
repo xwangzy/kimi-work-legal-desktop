@@ -63,13 +63,17 @@ export const EVENTS = {
   KERNEL_SHARE_CONFIRM_APPLY_FAILED: { level: "warn", fields: { reason: ["own_row_mismatch", "db"] } },
   // 管理员电脑确认之后（云端已批准）写本机成员记录失败：照常审计与同步，不把数据库错误给律师看
   KERNEL_SHARE_APPROVE_LOCAL_FAILED: { level: "warn", fields: {} },
+  // 第 72 批（复测 N8）：本机律所 / 工作室名称随云端当前工作空间改名（写入成功 / 失败）
+  KERNEL_FIRM_NAME_SYNCED: { level: "info", fields: {} },
+  KERNEL_FIRM_NAME_SYNC_FAILED: { level: "warn", fields: {} },
   // 第 68 批（D-294）：同一台电脑上切换账号档案（只记去向种类与失败原因，不记账号与目录名）
   KERNEL_PROFILE_SWITCH: { level: "info", fields: { to: ["existing", "enroll"] } },
   KERNEL_PROFILE_WRITE_FAILED: { level: "warn", fields: ERR },
   KERNEL_PROFILE_SESSION_HANDOFF: { level: "info", fields: {} },
   KERNEL_PROFILE_SESSION_HANDOFF_FAILED: { level: "warn", fields: { "reason?": ["mismatch"], ...ERR } },
   // 第 54 批：激活后删不掉待激活占位工作区（Windows 上有文件仍被占用）——不再让内核启动失败，下次启动再删
-  KERNEL_PENDING_WORKSPACE_LEFT: { level: "warn", fields: { reason: ["busy", "perm", "other"] } },
+  // 第 72 批（Windows 实机）：启动路径上只改名挪开（step rename），删除改在后台（step trash）；entry 记挡住删除的是哪类文件（不记路径）
+  KERNEL_PENDING_WORKSPACE_LEFT: { level: "warn", fields: { reason: ["busy", "perm", "other"], "step?": ["rename", "trash"], "entry?": ["ledger", "logs", "keys", "root", "other"] } },
   /** 我方账号（第 44 批）：只记原因代码，不记邮箱、密码与令牌。 */
   KERNEL_ACCOUNT_CALL_FAILED: { level: "warn", fields: { reason: "ident" } },
   KERNEL_ACCOUNT_LOGIN_REQUIRED: { level: "warn", fields: { reason: "ident" } },

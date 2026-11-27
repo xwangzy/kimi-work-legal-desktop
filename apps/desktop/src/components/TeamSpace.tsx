@@ -11,7 +11,7 @@ import { nav } from "../App.tsx";
 import { fmtPct } from "../lib/firm-usage.ts";
 import { offboardingSummary } from "../lib/offboarding.ts";
 import { personalView } from "../lib/personal-usage.ts";
-import { formatInviteCode, inviteCodeComplete, KIND_LABEL, leaveLines, teamErrorText, teamNameOk, upgradeLines, workspaceRoleTag, WS_ROLE_LABEL } from "../lib/workspace.ts";
+import { formatInviteCode, inviteCodeComplete, KIND_LABEL, leaveLines, teamErrorText, teamNameOk, teamPrivacyLine, upgradeLines, workspaceRoleTag, WS_ROLE_LABEL } from "../lib/workspace.ts";
 import { Icon } from "./Icons.tsx";
 import { Modal } from "./Modal.tsx";
 import { SettingRow } from "./SettingRow.tsx";
@@ -97,7 +97,7 @@ export function WorkspaceSection({ ws }: { ws: WorkspaceState }) {
           onClose={() => setUpgrading(false)}
           onDone={(name) => {
             setUpgrading(false);
-            setDone(`已升级为团队「${name}」。现在可以在“设置 · 团队”里邀请同事。`);
+            setDone(`已升级为团队「${name}」。现在可以在“设置 → 团队”里邀请同事。`);
             notifyWorkspaceChanged();
           }}
         />
@@ -245,7 +245,8 @@ export function TeamHeader({ ws, children }: { ws: WorkspaceState; children?: Re
   // 第 72 批评分 C10 第 1 条：两个比例的分母不同（团队总额度 / 你的个人额度），各写一句，免得“你用的比团队还多”读成矛盾
   const stats: { k: string; v: string; d?: string }[] = [
     // 管理员与合伙人在下面的成员一节看到“席位（AI 使用名额）n / N 已分配”，这里不重复
-    ...(firm && Number.isFinite(firm.seats) && !ws.features.teamRead ? [{ k: "AI 使用名额", v: `${firm.seats} 个`, d: "团队可同时用 AI 的人数" }] : []),
+    // 设计评分第三轮 C15：成员页与管理员页同一组卡、同一个名字“席位”（括注 AI 使用名额）
+    ...(firm && Number.isFinite(firm.seats) ? [{ k: "席位（AI 使用名额）", v: `${firm.seats} 个`, d: "团队可同时用 AI 的人数" }] : []),
     ...(firm ? [{ k: "团队本期已用", v: fmtPct(firm.used_ratio), d: "占团队总额度" }] : []),
     ...(mine !== null ? [{ k: "你本期已用", v: fmtPct(mine), d: "占你的个人额度" }] : []),
     ...(q?.plan?.label ? [{ k: "套餐", v: q.plan.label }] : []),
@@ -271,7 +272,7 @@ export function TeamHeader({ ws, children }: { ws: WorkspaceState; children?: Re
       {!ws.features.teamRead && (
         <p className="team-privacy" role="note">
           {Icon.lock()}
-          <span>事项内容只在成员自己的电脑上，管理员看不到；团队共享事项需要所内先配置共享通道。</span>
+          <span>{teamPrivacyLine()}</span>
         </p>
       )}
       {children}
