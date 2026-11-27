@@ -24,6 +24,7 @@ import { SendPoints } from "./SendPoints.tsx";
 import { notifyDataChanged } from "../lib/events.ts";
 import { afterConsentNotice, busyRunOfError, startHintOf, type StartHint } from "../lib/start-block.ts";
 import { StartHintBanner } from "./StartHint.tsx";
+import { authzScopeReady, localOnlyBlocked, reconfirmReason, teamFaultText } from "../lib/team-matters.ts";
 
 export interface PendingStart {
   matter: Matter;
@@ -131,25 +132,40 @@ export function RunSheet({ pending, onClose }: { pending: PendingStart; onClose:
   const [defaults, setDefaults] = useState<AiAuthorization | null>(null);
   const [record, setRecord] = useState<AuthRecord>(() => initialRecord(null, matter));
   const [touched, setTouched] = useState(false);
+  // 产品评分 G5-1（失败即收紧）：按事项范围的授权信息读到之前 / 读失败时，团队共享事项不能记录授权（卡片照样固定列出同事电脑、中软加密副本）
+  const [authzState, setAuthzState] = useState<"loading" | "ok" | "failed">("loading");
+  const [authzTick, setAuthzTick] = useState(0);
   useEffect(() => {
     if (!consentBlocked) return;
+    // 第 73 批（验收 P2-3）：按事项范围取次处理者清单与数据去向（团队共享事项另有一份）；从首页发起时事项来自事项列表、不带这两样，必须等它回来
+    setAuthzState("loading");
     api
-      .aiAuthorization()
+      .aiAuthorization(matter.matter_id)
       .then((a) => {
         setDefaults(a);
+        setAuthzState("ok");
         // 律师还没动过表单时按常用条款预填（读取有先后，不覆盖律师已经填的）
         if (!touched) setRecord(initialRecord(a, matter));
       })
-      .catch(() => setDefaults(null));
+      .catch(() => {
+        setDefaults(null);
+        setAuthzState("failed");
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [consentBlocked]);
+  }, [consentBlocked, authzTick]);
+  const scopeReady = authzScopeReady({ team: matter.collab_scope === "team", flows: matter.data_flows ?? defaults?.data_flows ?? null, state: authzState });
   // D-225：早期记录缺少出处（内核 needs_ref / basis_state）同样走重新确认卡，文案说明“请补记一次”
   const needsRef = !!estimate.data_where?.needs_ref || matter.basis_state === "needs_ref";
-  const reconfirm = needsRef || !!estimate.data_where?.reconfirm || needsReconfirm(matter, defaults?.subprocessors?.version);
+  // 按事项范围的清单版本判断（团队共享事项拿全局清单比会被误判要重新确认）
+  const scopeVersion = matter.subprocessors?.version ?? defaults?.subprocessors?.version;
+  const reconfirm = needsRef || !!estimate.data_where?.reconfirm || needsReconfirm(matter, scopeVersion);
+  const reconfirmWhy = reconfirmReason(matter, scopeVersion);
   const [detail, setDetail] = useState<MatterBasis | null>(null);
   // 逐项记录同样须写出处（D-225）
   const canRecord = detail ? detailReady(record.ref) : recordReady(record, need.sensitive);
   const [localOnlyBusy, setLocalOnlyBusy] = useState(false);
+  // 第 73 批（D-307，内核 team_scope_conflict）：团队共享事项不能记为客户要求不上云——置灰并说原因
+  const localOnlyWhy = localOnlyBlocked(matter);
   /** 客户要求不上云：记录后本事项只在这台电脑上处理（不用云端 AI、不联网），关闭确认卡。 */
   const markLocalOnly = async () => {
     setLocalOnlyBusy(true);
@@ -159,7 +175,7 @@ export function RunSheet({ pending, onClose }: { pending: PendingStart; onClose:
       notifyDataChanged();
       onClose();
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(teamFaultText(e));
     } finally {
       setLocalOnlyBusy(false);
     }
@@ -298,8 +314,11 @@ export function RunSheet({ pending, onClose }: { pending: PendingStart; onClose:
             }}
             sensitive={need.sensitive}
             reconfirm={reconfirm}
+            reconfirmWhy={reconfirmWhy}
             needsRef={needsRef}
-            processors={defaults?.subprocessors ?? null}
+            processors={matter.subprocessors ?? defaults?.subprocessors ?? null}
+            dataFlows={matter.data_flows ?? defaults?.data_flows ?? null}
+            team={matter.collab_scope === "team"}
             detail={detail}
             onDetail={setDetail}
             endpoint={matter.model_endpoint}
@@ -311,11 +330,20 @@ export function RunSheet({ pending, onClose }: { pending: PendingStart; onClose:
               先只用本机功能
             </button>
             <span aria-hidden="true">·</span>
-            <button type="button" className="btn-link" disabled={localOnlyBusy} aria-busy={localOnlyBusy} onClick={() => void markLocalOnly()}>
-              <BusyLabel busy={localOnlyBusy} busyText="正在记录…">
-                记为客户要求不上云
-              </BusyLabel>
-            </button>
+            {/* 设计评分第一轮 T3：团队共享事项上置灰（与“谁能看到”同一种禁用样式），原因一句写在同一行，完整说法放悬停 */}
+            {/* 置灰项与原因是一组：窄窗口换行时一起换，不把“（…）”孤零零留在下一行开头 */}
+            <span className="authz-exit-local">
+              <button type="button" className="btn-link" disabled={localOnlyBusy || !!localOnlyWhy} aria-busy={localOnlyBusy} aria-describedby={localOnlyWhy ? "local-only-why" : undefined} title={localOnlyWhy?.long} onClick={() => void markLocalOnly()}>
+                <BusyLabel busy={localOnlyBusy} busyText="正在记录…">
+                  记为客户要求不上云
+                </BusyLabel>
+              </button>
+              {localOnlyWhy && (
+                <span className="authz-exit-why" id="local-only-why" title={localOnlyWhy.long}>
+                  （{localOnlyWhy.short}）
+                </span>
+              )}
+            </span>
           </div>
         </>
       ) : (
@@ -341,13 +369,24 @@ export function RunSheet({ pending, onClose }: { pending: PendingStart; onClose:
         </div>
       )}
       <div className="modal-actions modal-actions-sticky">
+        {/* 13b：读不到数据去向时的原因与“重试”放在按钮旁边（吸底，视口内可见），不只在卡片底部 */}
+        {consentBlocked && !scopeReady.ready && scopeReady.note && (
+          <span className="authz-wait-note" role="status">
+            {scopeReady.note}
+            {scopeReady.retry && (
+              <button type="button" className="btn-link" onClick={() => setAuthzTick((t) => t + 1)}>
+                重试
+              </button>
+            )}
+          </span>
+        )}
         <button className="btn-ghost" onClick={onClose}>返回修改</button>
         {blocked && !consentBlocked ? (
           <button className="btn-primary" disabled>
             确认发起
           </button>
         ) : consentBlocked ? (
-          <button className="btn-primary" disabled={busy || !canRecord} aria-busy={busy} onClick={() => void recordConsentAndStart()}>
+          <button className="btn-primary" disabled={busy || !canRecord || !scopeReady.ready} aria-busy={busy} onClick={() => void recordConsentAndStart()}>
             <BusyLabel busy={busy} busyText="正在记录并开始…">
               {reconfirm ? "重新确认并开始" : "记录授权并开始"}
             </BusyLabel>

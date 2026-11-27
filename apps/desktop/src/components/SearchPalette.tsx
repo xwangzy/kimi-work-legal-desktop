@@ -7,6 +7,8 @@ import { api } from "../api.ts";
 import { nav } from "../App.tsx";
 import { ListSkeleton, LoadError } from "./Loading.tsx";
 import { searchGroups, searchLabels, SEARCH_KIND_LABEL, type SearchItem, setMatterFocus } from "../lib/search.ts";
+import { matterMark, type MatterMark } from "../lib/team-matters.ts";
+import { useWorkspace } from "./WorkspaceSwitch.tsx";
 
 export function SearchPalette({ onClose }: { onClose: () => void }) {
   const [q, setQ] = useState("");
@@ -20,6 +22,28 @@ export function SearchPalette({ onClose }: { onClose: () => void }) {
   const listRef = useRef<HTMLDivElement>(null);
   const labels = useMemo(() => searchLabels(), []);
   useEffect(() => inputRef.current?.focus(), []);
+  // 第 73 批（D-310）：事项副标题前缀“团队共享 · ”/“已移出 · ”——打开面板时读一次事项列表（本机，不联网）；个人空间不读
+  const kind = useWorkspace().kind;
+  const [marks, setMarks] = useState<ReadonlyMap<string, MatterMark>>(new Map());
+  useEffect(() => {
+    if (kind === "personal") return;
+    let live = true;
+    api
+      .listMatters()
+      .then((r) => {
+        if (!live) return;
+        const next = new Map<string, MatterMark>();
+        for (const m of r.matters) {
+          const mk = matterMark(m, kind);
+          if (mk) next.set(m.matter_id, mk);
+        }
+        setMarks(next);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [kind]);
   useEffect(() => {
     if (!q.trim()) {
       setRes(null);
@@ -46,7 +70,7 @@ export function SearchPalette({ onClose }: { onClose: () => void }) {
       clearTimeout(t);
     };
   }, [q, labels, retry]);
-  const groups = useMemo(() => (res ? searchGroups(res) : []), [res]);
+  const groups = useMemo(() => (res ? searchGroups(res, Date.now(), marks) : []), [res, marks]);
   const flat = groups.flatMap((g) => g.items);
   useEffect(() => setSel(0), [res]);
   useEffect(() => {

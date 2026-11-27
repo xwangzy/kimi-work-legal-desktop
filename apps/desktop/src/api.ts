@@ -251,6 +251,19 @@ export interface AiAuthorization {
   default_ref?: string | null;
   updated_at: string | null;
   subprocessors?: AiSubprocessors;
+  /** 第 73 批：给了 matter_id 时按事项范围（只有我 / 和同事一起办）回次处理者清单与数据去向。 */
+  scope?: "personal" | "team";
+  data_flows?: DataFlowEntry[];
+}
+/** 数据去向的一条（第 73 批，内核 dataFlowsFor）：只有我 = 案卷只存这台电脑；和同事一起办 = 同事电脑、中软加密副本。 */
+export interface DataFlowEntry {
+  key: string;
+  label: string;
+  text: string;
+  /** colleagues 一条：不含本人的在册事项成员数（内核可选给出；没有时界面从“本所同事 n 人”里读）。 */
+  count?: number | null;
+  /** 产品评分 G5-3：什么时候发生——on_ai_use = 使用 AI 时（授权要覆盖）；on_team_share = 选团队共享时已发生（律所已开通同事之间同步）。旧内核没有，界面按条目类型兜底。 */
+  when?: "on_ai_use" | "on_team_share" | "always" | string;
 }
 
 export interface MatterBasis {
@@ -318,6 +331,13 @@ export interface Matter {
   purge_eligible?: boolean;
   /** 本人在事项中的角色（matters.get）。 */
   my_role?: "owner" | "editor" | "viewer";
+  /** 第 73 批：本人能否改这个事项（matters.get；“只看”成员为 false；旧内核没有时按 my_role）。 */
+  can_write?: boolean;
+  /** 第 73 批：负责人已把我移出这个事项（本机如实得知；已有内容只能查看）。 */
+  removed_me?: boolean;
+  /** 第 73 批：按事项范围的次处理者清单与数据去向（matters.get）。 */
+  subprocessors?: AiSubprocessors;
+  data_flows?: DataFlowEntry[];
   /** 这台电脑上关联的案卷文件夹（第 48 批，matters.get）；没关联为 null。 */
   folder?: MatterFolder | null;
   created_at: string;
@@ -330,6 +350,9 @@ export interface AuthorizationHistoryEntry {
   basis_notice_version: string;
   /** 记录时的次处理者清单是否为当前版本。 */
   current_version: boolean;
+  /** 记录时事项的范围（第 73 批）。 */
+  scope?: "personal" | "team";
+  data_flows?: DataFlowEntry[];
   recorded_by: string | null;
   recorded_at: string;
 }
@@ -421,6 +444,8 @@ export interface DeletionReceiptView {
     device_id: string;
     inventory: Record<string, number>;
     copies: { where: string; status: "deleted" | "pending" | "irrevocable" | "kept" | "none"; note: string }[];
+    /** 第 73 批：local_copy = 被移出的成员只删了这台电脑上的副本（matters.remove_local_copy）；其余为整个事项的删除。 */
+    mode?: string;
   };
   signature: string;
   signer_cert: unknown;
@@ -973,7 +998,7 @@ export interface ControlPlaneStatus {
     version: number | null;
     issued_at: string | null;
     expires_at: string | null;
-    body: { max_mode: RunMode; auto_preauthorizations: string[]; fetch_allowlist_extra: string[]; l3a_standard_model: "deny" | "allow"; support_upload?: "deny" | "allow" };
+    body: { max_mode: RunMode; auto_preauthorizations: string[]; fetch_allowlist_extra: string[]; l3a_standard_model: "deny" | "allow"; support_upload?: "deny" | "allow"; share_relay?: "deny" | "allow" };
     relaxations: string[];
     signers: string[];
     fallback_reason: "none_received" | "expired" | "signers_insufficient" | "unrecognized_newer" | null;
@@ -1027,10 +1052,11 @@ export const api = {
   sampleStatus: () => invoke<{ installed: boolean; removed: boolean; matter_ids: string[]; litigation_offered: boolean; available?: boolean }>("samples.status", {}),
   removeSample: (matterId: string) => invoke<{ removed: boolean }>("samples.remove", { matter_id: matterId }),
   createMatter: (body: Record<string, unknown>) =>
-    invoke<{ matter: Matter; template_applied?: { template_id: string; todos: number; deadline: { date: string; steps: string[]; warnings: string[]; uncertain: boolean } | null; stance_mismatch?: boolean } }>("matters.create", body),
+    invoke<{ matter: Matter; members_added?: { user_id: string; name: string | null; matter_role: "editor" | "viewer"; devices_wrapped: number; can_receive: boolean; lawyer_note: string }[]; template_applied?: { template_id: string; todos: number; deadline: { date: string; steps: string[]; warnings: string[]; uncertain: boolean } | null; stance_mismatch?: boolean } }>("matters.create", body),
   matterTemplates: () => invoke<{ templates: MatterTemplate[] }>("matters.templates"),
   getMatter: (id: string) => invoke<{ matter: Matter; documents: any[]; run_policy?: RunPolicyView; runs?: any[] }>("matters.get", { matter_id: id }),
-  updateMatter: (id: string, patch: Record<string, unknown>) => invoke<{ matter: Matter }>("matters.update", { matter_id: id, patch }),
+  /** 字段一律放在 patch 里（放顶层内核回 422 patch_missing）；个人 → 团队成功时带 lawyer_note。 */
+  updateMatter: (id: string, patch: Record<string, unknown>) => invoke<{ matter: Matter; lawyer_note?: string }>("matters.update", { matter_id: id, patch }),
   // 数据生命周期（结案 → 保留期 → 删除；法律保全）
   matterLifecycle: (id: string) => invoke<{ lifecycle: MatterLifecycle; retention_years: { min: number; max: number; default: number }; receipt: DeletionReceiptView | null }>("matters.lifecycle", { matter_id: id }),
   closeMatter: (id: string, retentionYears: number) => invoke<{ lifecycle: MatterLifecycle; agent_data_purged: boolean }>("matters.close", { matter_id: id, retention_years: retentionYears }),
@@ -1064,6 +1090,11 @@ export const api = {
     return true;
   },
   purgeMatter: (id: string, body: { confirm_title: string; early: boolean; reason: string }) => invoke<{ lifecycle: MatterLifecycle; receipt: DeletionReceiptView }>("matters.purge", { matter_id: id, ...body }),
+  /**
+   * 第 73 批（第二轮复评 T13）：被负责人移出的团队共享事项——只删这台电脑上的副本（密码学擦除、签名回执 mode = local_copy；负责人与同事的电脑、中软的加密副本保留）。
+   * 未被移出 403 forbidden reason not_removed；名称不符 422；法律保全中照样拦。
+   */
+  removeLocalCopy: (id: string, confirmTitle: string) => invoke<{ lifecycle: MatterLifecycle; receipt: DeletionReceiptView; lawyer_note?: string }>("matters.remove_local_copy", { matter_id: id, confirm_title: confirmTitle }),
   consentNotice: (id: string) => invoke<{ artifact_version_id: string; filename: string; note: string }>("matters.consent_notice", { matter_id: id }),
   parties: (matterId: string) => invoke<{ parties: { name: string; kind: "person" | "org"; aliases: string[]; role: string | null }[]; full_pseudonym: boolean }>("matters.parties.list", { matter_id: matterId }),
   upsertParty: (matterId: string, body: { name: string; kind: "person" | "org"; aliases: string[]; role?: string | null }) => invoke("matters.parties.upsert", { matter_id: matterId, ...body }),
@@ -1226,7 +1257,8 @@ export const api = {
   setDocStyle: (body: Partial<Pick<DocStyleView, "letterhead" | "letterhead_name" | "letterhead_lines" | "body" | "page_numbers" | "redline_author">>) => invoke<DocStyleView>("doc_style.set", body),
   writingPrefs: () => invoke<WritingPrefs>("writing_prefs.get"),
   /** 客户授权的默认设置（第 48 批）：委托合同是否含使用 AI 辅助的条款；开了以后新建事项默认按此记录。 */
-  aiAuthorization: () => invoke<AiAuthorization>("ai_authorization.get"),
+  /** 给 matterId 时按事项范围回次处理者清单与数据去向（第 73 批）。 */
+  aiAuthorization: (matterId?: string) => invoke<AiAuthorization>("ai_authorization.get", matterId ? { matter_id: matterId } : {}),
   /** 律师本人的授权设置（第 51 批）：engagement_terms = 用常用条款出处预填；default_ref = 常用的委托合同 AI 条款出处。 */
   setAiAuthorization: (p: { engagement_terms?: boolean; default_ref?: string | null }) => invoke<AiAuthorization>("ai_authorization.set", p),
   /** 首次使用 AI 的数据去向告知（第 51 批）：律师本人看过的版本。 */
@@ -1415,7 +1447,7 @@ export const api = {
     }>("search.titles", { q, labels }),
   /** 上手清单（第 46 批）：自己建的事项、自己导入的材料、自己发起的任务与其成果的数目，以及“去做”直达的目标。 */
   guideProgress: () =>
-    invoke<{ firm: string | null; user: string | null; own_matters: number; materials: number; runs: number; deliverables: number; latest_matter_id: string | null; latest_run: { run_id: string; matter_id: string } | null }>("guide.progress"),
+    invoke<{ firm: string | null; user: string | null; own_matters: number; created_matters?: number; shared_matters?: number; materials: number; runs: number; deliverables: number; latest_matter_id: string | null; latest_run: { run_id: string; matter_id: string } | null }>("guide.progress"),
   recentRuns: (limit = 5) =>
     invoke<{ runs: { run_id: string; matter_id: string; matter_title: string; scenario: string; status: string; updated_at: string; goal: string; title?: string | null; skill?: string | null }[]; waiting: { run_id: string; matter_id: string }[] }>("runs.list_recent", { limit }),
 
@@ -1649,6 +1681,10 @@ export interface RelayStatus {
   matters?: number;
   /** 策略回退（过期、认不出、没收到），不是律所关闭。 */
   policy_fallback?: boolean;
+  /** 申领同事之间同步凭据最近一次失败的原因（第 73 批，如 credential_no_seat）。 */
+  credential_error?: string | null;
+  /** 这台电脑被负责人移出的事项数（第 73 批）。 */
+  removed_matters?: number;
   /** 团队同步的持久告警（两种介质）：纪元冲突、负责人无法确认。 */
   alerts?: { matter_id: string; title: string | null; kind: string; epoch: number; first_at: string; hits: number; peer_member: string | null; peer_name?: string | null }[];
 }
@@ -1947,6 +1983,130 @@ export const team = {
     /** 补测 D5：被拒 / 过期的结果“知道了”。 */
     dismiss: () => invoke<DeviceShareStatus>("team.deviceShare.dismiss"),
   },
+};
+/**
+ * 第 73 批（V47，契约 02 §2.1）：律师可读的同事名单（team.roster）。不含邮箱、手机号；含已移出 / 已离开的人（status 标明）。
+ * reason：个人空间 / 联不上 Kimi Work 服务（members 为本机缓存的上一份）/ 服务不支持；"unavailable" 是界面这一侧的“调用没成功”（旧内核、内核重启中）。
+ */
+export interface TeamRosterMember {
+  user_id: string;
+  member_slug: string;
+  name: string;
+  role: "admin" | "partner" | "lawyer" | "assistant" | (string & {});
+  status: "active" | "disabled" | "removed" | "left" | (string & {});
+  /** 这位同事至少有一台经团队确认、在用的电脑（自己：这台电脑是否经团队确认）。 */
+  can_receive: boolean;
+  is_me: boolean;
+  /** 是否占有 AI 使用名额（第 73 批；旧云端 null）。 */
+  seat?: boolean | null;
+}
+export interface TeamRoster {
+  available: boolean;
+  reason?: "personal_workspace" | "offline" | "not_supported" | "unavailable";
+  /** 这份名单的时刻（现取或缓存；没有为 null）。 */
+  fetched_at?: string | null;
+  members: TeamRosterMember[];
+}
+/** 事项角色（内核五种；律师端只露负责人 / 一起办 / 只看，D-308）。 */
+export type MatterRole = "owner" | "editor" | "reviewer" | "issuer" | "viewer";
+/** 事项的同事之间同步状态（契约 02 §2.3；not_allowed 不再映射成 unknown）。 */
+export type MatterSync = "ok" | "not_configured" | "not_allowed" | "unreachable" | "pending" | "unknown" | "no_seat" | "removed";
+export interface MatterMemberRow {
+  user_id: string;
+  name: string | null;
+  matter_role: MatterRole;
+  can_receive: boolean;
+  /** 名单里 status 非 active（已离开 / 被移出团队、停用）。 */
+  departed: boolean;
+  is_me: boolean;
+  added_at?: string;
+  /** 是否占有 AI 使用名额（第 73 批；旧云端 null）。 */
+  seat?: boolean | null;
+}
+export interface MatterMembersView {
+  matter_id: string;
+  collab_scope: "personal" | "team";
+  my_role: MatterRole | null;
+  is_owner: boolean;
+  /** 这台电脑现在能不能调整成员（负责人；经同步服务同步的须是最先同步它的那位负责人；本机无法确认负责人时不能；结案的不加人）。旧内核没有时按 is_owner。 */
+  can_manage?: boolean;
+  /** 最先在同步服务上登记这个事项的负责人（只有他能调整成员）。 */
+  relay_controller?: string | null;
+  /** 负责人已把我移出这个事项（本机如实得知；sync 为 removed）。 */
+  removed_me?: boolean;
+  members: MatterMemberRow[];
+  sync: MatterSync;
+}
+/** 第 73 批（契约 02 §2.6）：同事之间同步的开通状态（管理员电脑）。 */
+export interface ShareRelayStatus {
+  relay_configured: boolean;
+  state: "allowed" | "not_allowed" | "pending_second_signature" | "expired";
+  expires_at: string | null;
+  days_left: number | null;
+  can_manage: boolean;
+  threshold: number;
+  signatures: number;
+  /** 等签名的开通 / 续期草稿：第二位管理员在自己的电脑上点“开通”或“续期”即签这一份（内核找一致的待签草稿）。 */
+  pending?: { draft_id: string; kind: "enable" | "renew"; digest: string | null; signatures: number; signed_by_me: boolean } | null;
+  /** 开通 / 续期时随这次确认一并带上的其它放宽项（放宽项代码，不含同事之间同步本身）。 */
+  carry_relaxations?: { enable: string[]; renew: string[] | null };
+  expiring?: { days_left: number } | null;
+  fallback_reason?: string | null;
+  policy_version?: number | null;
+  /** D-311（待内核）：开通过、后来按本所规则关闭了（现行规则不允许、更早某一版允许过）；只用于显示“已关闭 · 某月某日关闭”，重新开通与首次开通同一流程。旧内核没有。 */
+  closed?: boolean;
+  closed_at?: string | null;
+  /** 取待签草稿失败的原因代码（管理员电脑）。 */
+  drafts_error?: string;
+}
+/** 开通 / 续期的应答：状态视图 + 是否已发布、草稿编号、一句结果。 */
+export interface ShareRelayActionResult extends ShareRelayStatus {
+  published?: boolean;
+  draft_id?: string;
+  lawyer_note?: string;
+}
+/** 第 73 批（契约 02 §2.2～2.5）：事项成员。只有负责人能加 / 改角色 / 移出（内核核验）；改角色 = 同一 user_id 以新角色再加一次（内核 addOrUpdateMember）。 */
+/** matters.members.add 的应答（内核终版：加 name、can_receive、lawyer_note；note 是技术说明，界面不显示）。 */
+export interface MatterMemberAddResult {
+  matter_id: string;
+  user_id: string;
+  name?: string | null;
+  can_receive?: boolean;
+  devices_wrapped?: number;
+  lawyer_note?: string;
+  note?: string;
+}
+export const matterMembers = {
+  list: (matterId: string) => invoke<MatterMembersView>("matters.members.list", { matter_id: matterId }),
+  add: (matterId: string, userId: string, role: "editor" | "viewer") => invoke<MatterMemberAddResult>("matters.members.add", { matter_id: matterId, user_id: userId, matter_role: role }),
+  setRole: (matterId: string, userId: string, role: "editor" | "viewer") => invoke<MatterMemberAddResult>("matters.members.add", { matter_id: matterId, user_id: userId, matter_role: role }),
+  remove: (matterId: string, userId: string) => invoke<{ matter_id: string; removed: string; name?: string | null; lawyer_note?: string; note?: string }>("matters.members.remove", { matter_id: matterId, user_id: userId }),
+};
+/**
+ * 团队共享事项的错误原因（内核终版，03 第 W2 行 ⑥）：error.code 是下面四个契约码之一（字符串，不在 domain FaultCode 里）或 validation，
+ * detail.reason 细分；界面按 code + reason 分支（lib/team-matters.ts teamFaultText）。
+ */
+export type TeamFaultReason =
+  | { code: "team_scope_unavailable"; reason: "personal_workspace" | "workspace_unknown" | "device_not_confirmed" | "client_no_cloud" }
+  | { code: "member_not_in_team"; reason: "not_in_roster" | "disabled" | "removed" | "left"; user_id: string }
+  | { code: "roster_unavailable"; reason: "offline" | "not_supported" }
+  | { code: "scope_irreversible"; reason: "team_to_personal" }
+  /** 内核补：已是团队共享的事项不能再设为客户要求不上云。 */
+  | { code: "team_scope_conflict"; reason?: string }
+  | { code: "validation"; reason: "relay_not_configured" | "not_enabled" | "patch_missing" };
+/** 第 73 批（契约 02 §2.1、§2.6）：同事名单与同事之间同步的开通、续期。 */
+export const teamMatters = {
+  /** 调用没成功（旧内核、内核重启中）按“暂时取不到”处理，界面不报错。 */
+  roster: () => invoke<TeamRoster>("team.roster").catch(() => ({ available: false, reason: "unavailable", members: [] }) as TeamRoster),
+  shareRelayStatus: () => invoke<ShareRelayStatus>("firm_policy.share_relay_status").catch(() => null),
+  /**
+   * 第 73 批（实拍补）：让内核看一眼所内规则是不是刚放开（只在 sync 为 not_allowed / unknown 时才可能同步，距上次控制面同步不足 60 秒不同步；
+   * 已开通、没配中继一律不同步）。给 matter_id 时 sync 按事项算。界面在提示可见时调一次，不轮询；旧内核没有这个方法时为 null。
+   */
+  refreshShareState: (matterId?: string) => invoke<{ refreshed: boolean; sync: MatterSync }>("team.refresh_share_state", matterId ? { matter_id: matterId } : {}).catch(() => null),
+  /** 第二位管理员在自己电脑上调同一个方法即签同一份待签草稿；ttl_days 1～30，缺省 30。 */
+  shareRelayEnable: (ttlDays?: number) => invoke<ShareRelayActionResult>("firm_policy.share_relay_enable", ttlDays ? { ttl_days: ttlDays } : {}),
+  shareRelayRenew: (ttlDays?: number) => invoke<ShareRelayActionResult>("firm_policy.share_relay_renew", ttlDays ? { ttl_days: ttlDays } : {}),
 };
 /** 第 72 批（U-2）：confirmed = 已可接收；pending 带 12 位核对码；restart = 刚换上新证书、客户端即将重新载入。 */
 export interface DeviceShareStatus {

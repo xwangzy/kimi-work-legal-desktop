@@ -21,12 +21,14 @@ import { errFields, slog } from "@zr-legal/safe-log";
 import { readFileSync, lstatSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { writeExportFile } from "../services/export-file.ts";
-import type { CpAuditRecord } from "@zr-legal/firm-trust";
+import type { CpAuditRecord, FirmPolicyBody as FirmPolicyBodyT } from "@zr-legal/firm-trust";
 import { SUPPORT_MAX_UPLOAD_BYTES } from "@zr-legal/egress-gate";
 import { supportErrorText } from "../services/support-errors.ts";
 import { parseReminderInput, type ReminderService } from "../services/reminders.ts";
 import { syncAlertsView, type ShareRelaySync } from "../services/share-relay.ts";
 import type { DeviceShareConfirm } from "../services/device-share.ts";
+import { readRosterCache, rosterFromReply, rosterOfflineCode, rosterUnsupportedCode, writeRosterCache, type RosterMember } from "../services/team-roster.ts";
+import { carriedRelaxations, daysLeftOf, enableBodyOf, expiringOf, normalizedBody, sameBody, seatProblemOf, shareRelayClosedOf, shareRelayStateOf, signerCount, type ShareRelayState } from "../services/share-relay-policy.ts";
 import { recordSuspectReview, sendPreview, summarizeSend, type SendSummary, type SuspectView } from "../services/send-preview.ts";
 import {
   ConsentStatus,
@@ -41,6 +43,7 @@ import {
   notFound,
   sha256Hex,
   validation,
+  type FaultCode,
 } from "@zr-legal/domain";
 import { pendingBasisLabels, type EgressGate } from "@zr-legal/egress";
 import { countTokens, MatterTokenizer } from "@zr-legal/tokenizer";
@@ -70,7 +73,7 @@ import type { MatterTokenStore } from "../egress/matter-tokens.ts";
 import { upstreamTransport, type KernelGate } from "../egress/kernel-gate.ts";
 import { applyStructuredPatches, registerCleanCopy } from "../services/structured-patch.ts";
 import { authorizationStateOf, basisCompleteOf, dataLevelOf, parseBasis, BASIS_KEYS } from "../egress/gate-host.ts";
-import { AI_NOTICE_VERSION, AI_SUBPROCESSORS, AUTHORIZATION_AUDIT_ACTION, BASIS_SOURCES, NEEDS_REF_REASON, authorizationHistory, NOTICE_RECONFIRM_REASON, normalizeRef, type BasisSource } from "../services/ai-authorization.ts";
+import { AI_NOTICE_VERSION, AI_SUBPROCESSORS, AUTHORIZATION_AUDIT_ACTION, BASIS_SOURCES, NEEDS_REF_REASON, authorizationHistory, dataFlowsFor, noticeVersionFor, NOTICE_RECONFIRM_REASON, normalizeRef, subprocessorsFor, type BasisSource, type DataFlowEntry } from "../services/ai-authorization.ts";
 import type { EgressApprovalStore } from "../services/egress-approvals.ts";
 import type { QaChatService } from "../services/qa-chat.ts";
 import type { KapAgentClient, KapMatterPolicy } from "../executor/kap-agent-client.ts";
@@ -83,9 +86,9 @@ import type { KernelConfig } from "../config.ts";
 import { runModeOf, type Identity } from "../identity.ts";
 import type { AsyncMutex } from "../mutex.ts";
 import { currentTenantEpoch, ensureNodeDevice, getDeviceKeys, getFirmRootPrivateKey, stageDeviceRecovery, type KernelKeyContext } from "../devices.ts";
-import { archivedCertsOf, certVerifying, rowPayloadHash, verifyCertSignature } from "../ledger-signer.ts";
+import { archivedCertsOf, certVerifying, deviceTombstoned, rowPayloadHash, verifyCertSignature } from "../ledger-signer.ts";
 import { syncExport, syncImport, syncStatus, type SyncDeps } from "../sync-engine.ts";
-import { addOrUpdateMember, chainSummary, chainView, hasChain, keyFingerprint, rebootstrapMatter, refreshChain, rotateChainKey, writeEvent, writeGenesis } from "../member-log.ts";
+import { addOrUpdateMember, chainSummary, chainView, hasChain, keyFingerprint, rebootstrapMatter, refreshChain, rotateChainKey, writeAnchor, writeEvent, writeGenesis } from "../member-log.ts";
 import { docxHeaderFooterTexts, parseDocument } from "../services/parser.ts";
 import { detectClassifiedMarking, type ClassifiedFinding } from "../services/classified-marking.ts";
 import { restoreArtifactBytes } from "../services/export-restore.ts";
@@ -602,12 +605,29 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
    * 律师本人的 AI 辅助授权设置（迁移 0070、0072）：委托合同是否通常含使用 AI 辅助与次处理者的条款、常用条款出处。
    * 第 51 批（D-216）起只用于预填出处，不再替新事项自动记录；随附当前的 AI 次处理者清单（界面据此告知客户）。
    */
-  function aiAuthorizationOf(tenantId: string, userId: string): { engagement_terms: boolean; default_ref: string | null; updated_at: string | null; subprocessors: typeof AI_SUBPROCESSORS } {
+  function aiAuthorizationOf(
+    tenantId: string,
+    userId: string,
+    matter: { matter_id: string; collab_scope: string } | null = null,
+  ): { engagement_terms: boolean; default_ref: string | null; updated_at: string | null; subprocessors: { version: string; items: readonly { name: string; role: string }[] }; scope?: string; data_flows?: DataFlowEntry[] } {
     const r = db.get<{ engagement_terms: number; default_ref: string | null; updated_at: string }>(
       `SELECT engagement_terms, default_ref, updated_at FROM user_ai_authorization WHERE tenant_id = ? AND user_id = ?`,
       [tenantId, userId],
     );
-    return { engagement_terms: r?.engagement_terms === 1, default_ref: r?.default_ref ?? null, updated_at: r?.updated_at ?? null, subprocessors: AI_SUBPROCESSORS };
+    const base = { engagement_terms: r?.engagement_terms === 1, default_ref: r?.default_ref ?? null, updated_at: r?.updated_at ?? null };
+    // 第 73 批（P2-3）：给了事项时按事项范围给次处理者清单与数据去向（团队共享事项：同事电脑上也有、中软保存加密副本）
+    if (!matter) return { ...base, subprocessors: AI_SUBPROCESSORS };
+    return { ...base, subprocessors: subprocessorsFor(matter.collab_scope), scope: matter.collab_scope, data_flows: dataFlowsOf(matter.matter_id, matter.collab_scope) };
+  }
+
+  /** 事项的数据去向（P2-3）：团队共享事项带“本所同事 n 人”（除本人外在册的事项成员，不含节点服务成员）。 */
+  function dataFlowsOf(matterId: string, scope: string | null | undefined): DataFlowEntry[] {
+    // 用 AI 时的去向按事项的模型端点与数据级别（on_ai_use）；同事电脑、中软加密副本是团队共享就已发生的（on_team_share）
+    const m = db.get<{ model_endpoint: string; confidentiality: string; consent_status: string }>(`SELECT model_endpoint, confidentiality, consent_status FROM matters WHERE matter_id = ?`, [matterId]);
+    const ai = m ? { endpoint: m.model_endpoint, level: dataLevelOf(m.confidentiality, m.consent_status) } : null;
+    if (scope !== CollabScope.team) return dataFlowsFor(scope, null, ai);
+    const n = db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM matter_members WHERE matter_id = ? AND removed_at IS NULL AND user_id <> ? AND user_id <> 'node_service'`, [matterId, keyctx.device.cert.memberId])?.n ?? 0;
+    return dataFlowsFor(scope, n, ai);
   }
 
   /** 律师本人看过的“首次使用 AI 数据去向告知”版本（迁移 0072）。 */
@@ -630,6 +650,7 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
     refRaw: unknown,
     basisJson: string | null,
     _id: { tenantId: string; userId: string },
+    scope: string | null | undefined,
   ): { source: BasisSource; ref: string; notice: string } | null {
     if (v === undefined || v === null || v === "") return null;
     if (!(BASIS_SOURCES as readonly unknown[]).includes(v)) throw validation(`basis_source 须为 ${BASIS_SOURCES.join(" / ")}`);
@@ -644,7 +665,8 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
       if (source === "engagement_terms") throw validation("请写明授权依据的出处：委托合同名称或编号、条款号");
       throw validation("逐项记录同样须写明授权依据的出处：委托合同条款或客户书面同意的日期与方式");
     }
-    return { source, ref, notice: AI_SUBPROCESSORS.version };
+    // 第 73 批（P2-3）：按事项范围记次处理者清单版本（团队共享事项是另一份清单）
+    return { source, ref, notice: noticeVersionFor(scope) };
   }
 
   /**
@@ -652,18 +674,21 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
    * 依据类型、出处原文（≤200 字）、次处理者清单版本、四项；记录人与时间即审计行的 actor_id 与 created_at。
    * 出处是“委托合同第 X 条”这类文字，不是案件内容，可以明文留存；审计表只增不改（随签名链、事项同步与归档 ledger 一起走）。
    */
-  function auditAuthorization(id: Identity, matterId: string, rec: { source: BasisSource; ref: string; notice: string }, basisJson: string | null): void {
-    const detail = canonicalJson({ v: 1, basis_source: rec.source, basis_ref: rec.ref, basis_notice_version: rec.notice, basis: parseBasis(basisJson) });
+  function auditAuthorization(id: Identity, matterId: string, rec: { source: BasisSource; ref: string; notice: string }, basisJson: string | null, scope: string | null | undefined): void {
+    // 第 73 批（P2-3）：授权记录里落下记录时的事项范围与数据去向（团队共享事项：同事电脑、中软加密副本）
+    const detail = canonicalJson({ v: 1, basis_source: rec.source, basis_ref: rec.ref, basis_notice_version: rec.notice, basis: parseBasis(basisJson), scope: scope === CollabScope.team ? "team" : "personal", data_flows: dataFlowsOf(matterId, scope) });
     audit(db, id, AUTHORIZATION_AUDIT_ACTION, "matter", matterId, detail, keyctx);
   }
 
   /** 事项的授权记录历史（D-225；新的在前）：从审计事件读明文，记录人按成员姓名。 */
-  function authorizationHistoryOf(matterId: string): { basis_source: string; basis_ref: string; basis_notice_version: string; current_version: boolean; recorded_by: string | null; recorded_at: string }[] {
+  function authorizationHistoryOf(matterId: string, scope: string | null | undefined): { basis_source: string; basis_ref: string; basis_notice_version: string; current_version: boolean; scope: string | null; data_flows: DataFlowEntry[] | null; recorded_by: string | null; recorded_at: string }[] {
     return authorizationHistory(db, matterId).map((r) => ({
       basis_source: r.basis_source,
       basis_ref: r.basis_ref,
       basis_notice_version: r.basis_notice_version,
-      current_version: r.basis_notice_version === AI_SUBPROCESSORS.version,
+      current_version: r.basis_notice_version === noticeVersionFor(scope),
+      scope: r.scope,
+      data_flows: r.data_flows,
       recorded_by: displayNameOf(r.recorded_by_id, null),
       recorded_at: r.recorded_at,
     }));
@@ -951,13 +976,20 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
 
   const api: Record<string, Handler> = {
     // ─── 事项（§15.2 matters.create/update） ───
-    "matters.create": (body, id) => {
+    "matters.create": async (body, id) => {
       if (!body?.title || typeof body.title !== "string") throw validation("需要 title");
       if (!body?.stance || typeof body.stance !== "string") throw validation("需要 stance（我方立场）");
       const endpoint = body.model_endpoint ?? ModelEndpoint.standard;
       if (!Object.values(ModelEndpoint).includes(endpoint)) throw validation(`model_endpoint 须为 ${Object.values(ModelEndpoint).join("/")}`);
       const scope = body.collab_scope ?? CollabScope.personal;
       if (!Object.values(CollabScope).includes(scope)) throw validation(`collab_scope 须为 personal/team`);
+      // 第 73 批（D-307，契约 §2.2）：团队共享——前置（团队空间、律所根证书、非 L3b）与同时加的同事（只认名单里在用的成员）
+      const wanted = teamMembersParam(body.members, id);
+      if (wanted.length > 0 && scope !== CollabScope.team) throw validation("只有团队共享事项才能同时加同事");
+      if (scope === CollabScope.team) await assertTeamScopeAllowed(id, { confidentiality: body.confidentiality ?? "normal", consent_status: body.consent_status ?? ConsentStatus.pending });
+      const roster = wanted.length > 0 ? await rosterForMutation(id) : null;
+      const adding = wanted.map((w) => ({ ...w, name: roster ? requireRosterActive(roster, w.user_id).name : displayNameOf(w.user_id, null) }));
+      const added: { user_id: string; name: string; matter_role: string; devices_wrapped: number; can_receive: boolean }[] = [];
       const basisJson = basisFrom(body.basis, endpoint);
       // 四项依据给出时由四项派生 consent_status（“已拒绝”保留：当事人限制另由密级表达）
       let consent = body.consent_status ?? ConsentStatus.pending;
@@ -966,7 +998,7 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
       if (body.confidentiality !== undefined && !["normal", "high", "strict"].includes(body.confidentiality)) throw validation("confidentiality 须为 normal / high / strict");
       const facts = matterFactsFrom(body);
       // 四项依据的记录（第 51 批，D-216）：来源类型 + 出处 + 次处理者清单版本，逐案记录；当事人拒绝时不记
-      const basisRec = consent === "refused" ? null : basisRecordFrom(body.basis_source, body.basis_ref, basisJson, id);
+      const basisRec = consent === "refused" ? null : basisRecordFrom(body.basis_source, body.basis_ref, basisJson, id, scope);
       const basisSource = basisRec?.source ?? null;
       // 事项模板（v9.4 第 22 批，C1 #20）：先校验并算好届满日，失败即不创建；阶段没给时用模板的
       const plan = planTemplate(body.template_id, body.template_start, body.stance);
@@ -1022,17 +1054,25 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
         ]);
         // 团队事项的成员链起点（第 12 批；个人事项不同步、不写链）
         if (scope === "team" && !config.legacyMemberRows) writeGenesis({ db, keyctx, tenantId: id.tenantId }, matterId, id.userId, matterKey);
+        // 第 73 批（契约 §2.2）：同时加的同事与建事项在同一个事务里（任一失败整体回滚，不留“建了一半”）；成员事件由本机负责人设备签名
+        for (const w of adding) {
+          noteMemberUser(id, w.user_id, w.name);
+          const r = hasChain(db, matterId) ? addOrUpdateMember(chainDeps(id), matterId, w.user_id, w.matter_role) : addMemberRows(id, matterId, w.user_id, w.matter_role);
+          added.push({ user_id: w.user_id, name: w.name ?? w.user_id, matter_role: w.matter_role, devices_wrapped: r.wrapped, can_receive: canReceiveOf(w.user_id, id) });
+        }
         if (plan) todosAdded = applyTemplateTodos(db, plan, { tenant_id: id.tenantId, matter_id: matterId, created_by: id.userId });
       });
       audit(db, id, "matter.create", "matter", matterId, plan || basisSource ? sha256Hex(JSON.stringify({ ...(plan ? { template: plan.template.id, todos: todosAdded, deadline: !!plan.deadline } : {}), ...(basisRec ? { basis_source: basisRec.source, basis_notice_version: basisRec.notice, has_ref: !!basisRec.ref } : {}) })) : undefined, keyctx);
+      for (const a of added) audit(db, id, "matter.member_add", "matter", matterId, a.user_id, keyctx);
       // D-225：授权记录明文留痕（只增不改）
-      if (basisRec) auditAuthorization(id, matterId, basisRec, basisJson);
+      if (basisRec) auditAuthorization(id, matterId, basisRec, basisJson, scope);
       // 事项匿名摘要（阶段 6；经控制面下发网关做二次检查，收敛 D-20）：只有匿名编号与数据级别、端点、依据是否齐备
       deps.governance?.enqueueSummary(matterId);
       void deps.controlPlane?.pushSummaries().catch(() => {});
       return {
         matter: matterOut(db.get(`SELECT * FROM matters WHERE matter_id = ?`, [matterId])),
         ...(plan ? { template_applied: { template_id: plan.template.id, todos: todosAdded, deadline: plan.deadline, stance_mismatch: plan.stance_mismatch } } : {}),
+        ...(scope === CollabScope.team ? { members_added: added.map((a) => ({ ...a, lawyer_note: memberAddedText(a.name, a.devices_wrapped, a.can_receive, matterId) })) } : {}),
       };
     },
     // 事项模板清单（v9.4 第 22 批）：新建事项时选类型；概览里“推荐的方法”按模板的场景卡 id
@@ -1084,6 +1124,8 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
           basis_recorded_at: lastAuth.get(m.matter_id)?.at ?? null,
           basis_recorded_by: lastAuth.has(m.matter_id) ? displayNameOf(lastAuth.get(m.matter_id)!.by, null) : null,
           ...(samples.has(m.matter_id) ? { is_sample: true } : {}),
+          // 第 73 批：已被负责人移出（与 matters.get 同一判定；侧栏、列表、搜索标“已移出”、不挂团队共享记号）
+          removed_me: m.collab_scope === CollabScope.team && removedFromMatter(m.matter_id),
           activity: { ...(act.get(m.matter_id) ?? { waiting: 0, running: 0, waiting_run_id: null }), pending_review: pendingReview.get(m.matter_id) ?? 0, last_at: lastAt.get(m.matter_id) ?? m.created_at },
         })),
       };
@@ -1156,21 +1198,64 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
       const isSample = !!db.get(`SELECT 1 AS x FROM sample_matters WHERE matter_id = ? AND removed_at IS NULL`, [matter.matter_id]);
       // 案卷文件夹（第 48 批）：本机关联的文件夹（路径只在这台电脑）
       // D-225：授权记录历史（明文，新的在前）——事项页与签发页的“客户授权”一行据此显示
-      const authHistory = authorizationHistoryOf(matter.matter_id);
+      const authHistory = authorizationHistoryOf(matter.matter_id, matter.collab_scope);
       return {
-        matter: { ...matterOut(matter), my_role: myRole, ...(isSample ? { is_sample: true } : {}), folder: folderViewOf(matter), basis_recorded_at: authHistory[0]?.recorded_at ?? null, basis_recorded_by: authHistory[0]?.recorded_by ?? null, authorization_history: authHistory },
+        matter: {
+          ...matterOut(matter),
+          my_role: myRole,
+          ...(isSample ? { is_sample: true } : {}),
+          folder: folderViewOf(matter),
+          basis_recorded_at: authHistory[0]?.recorded_at ?? null,
+          basis_recorded_by: authHistory[0]?.recorded_by ?? null,
+          authorization_history: authHistory,
+          // 第 73 批（P2-3）：按事项范围的次处理者清单与数据去向
+          subprocessors: subprocessorsFor(matter.collab_scope),
+          data_flows: dataFlowsOf(matter.matter_id, matter.collab_scope),
+          // 第 73 批（P3-3、P2-2）：能不能在这台电脑上写（只看成员、已结案、已被负责人移出都不能）与“已被移出这个事项”
+          can_write: canWriteMatter(matter.matter_id, id),
+          removed_me: removedFromMatter(matter.matter_id),
+        },
         documents: docs,
         runs,
         run_policy: runPolicyView(matter.matter_id),
       };
     },
 
-    "matters.update": (p, id) => {
+    "matters.update": async (p, id) => {
       const matter = requireMatterAccess(db, String(p?.matter_id ?? ""), id);
       requireMatterWriter(db, matter.matter_id, id);
-      const body = p?.patch ?? {};
+      // 第 73 批：要改的字段放在 patch 里（V46 10b 记的“改 collab_scope 返回无可更新字段”即调用方把字段放在了顶层）
+      if (p?.patch === undefined && p && typeof p === "object" && Object.keys(p).some((k) => k !== "matter_id")) {
+        throw validation("要改的字段请放在 patch 里：{ matter_id, patch: { … } }", { reason: "patch_missing" });
+      }
+      const body = { ...(p?.patch ?? {}) };
+      // 第 73 批（D-307，契约 §2.5）：“谁能看到”只有负责人能改；个人 → 团队须满足团队事项的前置；团队 → 个人不允许（原实现是静默分叉）
+      let toTeam = false;
+      if (body.collab_scope !== undefined) {
+        if (!(Object.values(CollabScope) as string[]).includes(body.collab_scope)) throw validation(`collab_scope 非法值 ${body.collab_scope}`);
+        if (body.collab_scope === matter.collab_scope) delete body.collab_scope;
+        else {
+          requireMatterOwner(db, matter.matter_id, id, "只有事项负责人能改“谁能看到”");
+          if (matter.collab_scope === CollabScope.team) throw teamFault("scope_irreversible", "团队共享事项不能改回只有我：要结束共享请移出同事或结案", 409, { reason: "team_to_personal" });
+          requireActiveMatter(db, matter.matter_id);
+          await assertTeamScopeAllowed(id, { confidentiality: body.confidentiality ?? matter.confidentiality, consent_status: body.consent_status ?? matter.consent_status });
+          toTeam = true;
+        }
+        if (Object.keys(body).length === 0) return { matter: matterOut(matter), note: "“谁能看到”没有变化" };
+      }
+      // 第 73 批（D-307 补拦截）：已是团队共享的事项不能再设为“客户要求不上云”（strict 或记客户拒绝云端处理 → L3b）——
+      // 同事之间同步要经中软转送加密内容，与客户的要求字面冲突；团队共享又不能改回只有我，所以只能另建一个只有我的事项
+      if (matter.collab_scope === CollabScope.team && (body.confidentiality !== undefined || body.consent_status !== undefined)) {
+        const before = dataLevelOf(matter.confidentiality, matter.consent_status);
+        const next = dataLevelOf(body.confidentiality ?? matter.confidentiality, body.consent_status ?? matter.consent_status);
+        if (next === "L3b" && before !== "L3b") {
+          throw teamFault("team_scope_conflict", "这个事项已是团队共享，经中软转送加密内容；客户要求不上云时，请为这部分工作另建一个只有我的事项", 409, { reason: body.consent_status === "refused" ? "consent_refused" : "strict" });
+        }
+      }
       const fields: string[] = [];
       const values: unknown[] = [];
+      // 第 73 批（P2-3）：这次更新之后的事项范围（授权记录按它记次处理者清单版本）
+      const scopeAfter: string = toTeam ? CollabScope.team : matter.collab_scope;
       const simple = ["title", "client_name", "counterparty", "stance", "jurisdiction", "confidentiality"] as const;
       for (const f of simple) {
         if (body[f] !== undefined) {
@@ -1202,7 +1287,7 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
         const bj = basisFrom(body.basis, String(body.model_endpoint ?? matter.model_endpoint));
         fields.push(`basis = ?`);
         values.push(bj);
-        basisSourceNext = { v: matter.consent_status === "refused" || body.consent_status === "refused" ? null : basisRecordFrom(body.basis_source, body.basis_ref, bj, id) };
+        basisSourceNext = { v: matter.consent_status === "refused" || body.consent_status === "refused" ? null : basisRecordFrom(body.basis_source, body.basis_ref, bj, id, scopeAfter) };
         if (matter.consent_status !== "refused") {
           fields.push(`consent_status = ?`);
           values.push(bj && basisCompleteOf({ basis: bj }) ? "agreed" : "pending");
@@ -1234,7 +1319,7 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
           const bj = body.basis !== undefined ? basisFrom(body.basis, String(body.model_endpoint ?? matter.model_endpoint)) : matter.basis;
           body.consent_status = bj && basisCompleteOf({ basis: bj }) ? "agreed" : "pending";
           // 记录方式按本次给出的重新核（律师的默认设置可能已经关了）；没给就清为 NULL
-          basisSourceNext = { v: body.basis !== undefined ? basisRecordFrom(body.basis_source, body.basis_ref, bj, id) : null };
+          basisSourceNext = { v: body.basis !== undefined ? basisRecordFrom(body.basis_source, body.basis_ref, bj, id, scopeAfter) : null };
         }
         if (body.consent_status === "refused") basisSourceNext = { v: null };
       }
@@ -1242,7 +1327,7 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
       let basisRecordOnly = false;
       if (!basisSourceNext && body.basis === undefined) {
         if (body.basis_source !== undefined) {
-          basisSourceNext = { v: matter.consent_status === "refused" ? null : basisRecordFrom(body.basis_source, body.basis_ref, matter.basis, id) };
+          basisSourceNext = { v: matter.consent_status === "refused" ? null : basisRecordFrom(body.basis_source, body.basis_ref, matter.basis, id, scopeAfter) };
           basisRecordOnly = true;
         } else if (body.basis_ref !== undefined) {
           throw validation("记录授权依据的出处须同时给出依据类型（basis_source）");
@@ -1277,7 +1362,15 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
       // 只记录授权依据同样算策略变更（放开或拦下模型推理、匿名摘要随之变化）
       const policyChange = POLICY_FIELDS.some((f) => body[f] !== undefined) || basisReopened || basisRecordOnly;
       if (policyChange) fields.push(`policy_version = policy_version + 1`);
-      db.run(`UPDATE matters SET ${fields.join(", ")} WHERE matter_id = ?`, [...values, matter.matter_id]);
+      db.tx(() => {
+        db.run(`UPDATE matters SET ${fields.join(", ")} WHERE matter_id = ?`, [...values, matter.matter_id]);
+        // 个人 → 团队：本机负责人立即锚定成员链（原先等首个同步周期，期间加人走不上链的旧路径）；不是锚定者（多位负责人时）留给同步时锚定
+        if (toTeam && !config.legacyMemberRows && !hasChain(db, matter.matter_id)) {
+          const owners = db.all<{ user_id: string }>(`SELECT user_id FROM matter_members WHERE matter_id = ? AND matter_role = 'owner' AND removed_at IS NULL ORDER BY user_id`, [matter.matter_id]).map((r) => r.user_id);
+          const anchorer = owners.includes(matter.created_by) ? matter.created_by : (owners[0] ?? null);
+          if (anchorer === keyctx.device.cert.memberId) writeAnchor(chainDeps(id), matter.matter_id);
+        }
+      });
       // 审批相关字段（审批策略指纹的组成）变化才作废批准；当事人（词典）变化只影响令牌化，不作废（复核 S5-B18）
       const APPROVAL_FIELDS = ["confidentiality", "basis", "consent_status", "model_endpoint", "collab_scope", "full_pseudonym"];
       if (APPROVAL_FIELDS.some((f) => body[f] !== undefined) || basisReopened) deps.approvals?.revokeMatter(matter.matter_id);
@@ -1291,17 +1384,18 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
       audit(db, id, "matter.update", "matter", matter.matter_id, sha256Hex(JSON.stringify({ fields: Object.keys(body).sort(), ...(basisReopened ? { basis_reopened: "subprocessor" } : {}), ...(basisSourceNext ? { basis_source: basisSourceNext.v?.source ?? null, basis_notice_version: basisSourceNext.v?.notice ?? null } : {}) })), keyctx);
       const after = db.get<any>(`SELECT * FROM matters WHERE matter_id = ?`, [matter.matter_id]);
       // D-225：每次记录或重新确认授权都追加一条明文记录（历史不覆盖）
-      if (basisSourceNext?.v) auditAuthorization(id, matter.matter_id, basisSourceNext.v, after?.basis ?? null);
+      if (basisSourceNext?.v) auditAuthorization(id, matter.matter_id, basisSourceNext.v, after?.basis ?? null, after?.collab_scope ?? scopeAfter);
       return {
         matter: matterOut(after),
         note: `关键口径变更已记录（审计事件已入签名链）；策略事件的签发人角色签名在同步阶段接入${basisReopened ? "。改用有第三方处理者的端点后，“转委托与次处理者”已改为待确认，请核实后补录" : ""}`,
+        ...(toTeam ? { lawyer_note: deps.governance?.shareRelayAllowed() ? "已改为团队共享：加进来的同事会收到这个事项（不能再改回只有我）" : "已改为团队共享（不能再改回只有我）。所内开通同事之间同步后，加进来的同事才会收到" } : {}),
       };
     },
 
     // ─── 材料（§15.2 materials.mount/import：原件不修改；变化即新版本） ───
     "materials.import": async (p, id) => {
       const matter = requireMatterAccess(db, String(p?.matter_id ?? ""), id);
-      requireMatterWriter(db, matter.matter_id, id);
+      requireMatterWriter(db, matter.matter_id, id, { action: "add" });
       let bytes: Buffer;
       let filename: string;
       if (p?.path) {
@@ -1385,7 +1479,7 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
      */
     "materials.from_artifact": async (p, id) => {
       const art = requireArtifact(db, String(p?.artifact_version_id ?? ""), id);
-      requireMatterWriter(db, art.matter_id, id);
+      requireMatterWriter(db, art.matter_id, id, { action: "add" });
       if (!/\.docx$/i.test(String(art.filename))) throw validation("只有 Word 成果可以作为材料继续修改");
       const buf = blobs.read(String(art.storage_uri));
       if (sha256Hex(buf) !== art.sha256) throw new DomainError("hash_mismatch", "成果文件 hash 与登记不符（完整性校验失败）", 500);
@@ -1537,7 +1631,7 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
 
     "materials.mount": async (p, id) => {
       const matter = requireMatterAccess(db, String(p?.matter_id ?? ""), id);
-      requireMatterWriter(db, matter.matter_id, id);
+      requireMatterWriter(db, matter.matter_id, id, { action: "add" });
       const path = String(p?.path ?? "");
       if (!path) throw validation("需要 path（挂载本机或共享位置的文件）");
       const st = lstatSync(path); // 符号链接不跟随（探针 3）
@@ -1685,6 +1779,24 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
       return { lifecycle: lifecycleOf(db, matter.matter_id), receipt: receiptView(matter.matter_id) };
     },
 
+    // 第 73 批：被负责人移出的成员删除这台电脑上的副本（只在本机记为“已被移出”时允许——中继答“不是读者”、本机不是负责人；
+    // 不能借此绕过负责人删除团队事项）。密码学擦除与回执同 matters.purge（同一个 matter.purged 审计事件，链复核照常核对删除清单），
+    // 另记 matter.local_copy_removed；不碰中继与同事。之后 matters.list 不再列出
+    "matters.remove_local_copy": async (p, id) => {
+      const matter = requireMatterAccess(db, String(p?.matter_id ?? ""), id);
+      if (matter.collab_scope !== CollabScope.team || !removedFromMatter(matter.matter_id)) {
+        throw new DomainError("forbidden", "只有已被负责人移出的团队共享事项才能在这里删除本机副本；要删除事项，请找负责人（结案后删除）", 403, { reason: "not_removed" });
+      }
+      await purgeMatter(lifecycleDeps(), matter.matter_id, {
+        by: id.userId,
+        confirm_title: p?.confirm_title,
+        mode: "local_copy",
+        audit: (digest) => audit(db, id, "matter.purged", "matter", matter.matter_id, digest, keyctx),
+      });
+      audit(db, id, "matter.local_copy_removed", "matter", matter.matter_id, undefined, keyctx);
+      return { lifecycle: lifecycleOf(db, matter.matter_id), receipt: receiptView(matter.matter_id), lawyer_note: "已删除这台电脑上的副本：负责人与其他同事那边的事项不受影响" };
+    },
+
     // 结案归档导出（第 02 篇 §9.13 开放格式；services/matter-archive.ts）：含案卷原文，只由事项负责人发起并记审计
     "matters.archive": (p, id) => {
       const matter = requireMatterAccess(db, String(p?.matter_id ?? ""), id);
@@ -1824,7 +1936,7 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
     "runs.estimate": (p, id) => {
       const matterId = String(p?.matter_id ?? "");
       const matter = requireMatterAccess(db, matterId, id);
-      requireMatterWriter(db, matter.matter_id, id);
+      requireMatterWriter(db, matter.matter_id, id, { action: "add" });
       if (!SCENARIOS.has(p?.scenario)) throw validation(`scenario 须为 ${[...SCENARIOS].join(" / ")}`);
       const docIds: string[] = p?.document_version_ids ?? [];
       let pages = 0;
@@ -1925,11 +2037,17 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
               { label: "按原文发送", text: plainNote.replace(/^以原文发送的有：/, "") },
               ...(searchNote ? [{ label: "联网检索", text: searchNote.replace(/^；/, "") }] : []),
               { label: "是否保存", text: retentionNote },
+              // 第 73 批（P2-3）：团队共享事项的去向如实写——同事电脑上也有、中软保存加密副本
+              ...(matter.collab_scope === CollabScope.team ? dataFlowsOf(matterId, matter.collab_scope).filter((f) => f.when === "on_team_share").map((f) => ({ label: f.label, text: f.text })) : []),
               { label: "记录", text: "每一次发送都记在本任务的“数据去向”里" },
             ];
       const dataWhere = {
         model_endpoint: matter.model_endpoint,
         consent_status: matter.consent_status,
+        // 第 73 批（P2-3）：事项的数据去向（只有我：案卷只存这台电脑；团队共享：同事电脑、中软加密副本）——授权卡“系统另外做到 / 去向”按它写
+        collab_scope: matter.collab_scope,
+        data_flows: dataFlowsOf(matterId, matter.collab_scope),
+        subprocessors: subprocessorsFor(matter.collab_scope),
         bullets,
         bullet_kinds: bulletKinds,
         ...(previewRows.length ? { preview_rows: previewRows } : {}),
@@ -1973,7 +2091,7 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
     "runs.start": async (p, id) => {
       const matterId = String(p?.matter_id ?? "");
       const matter = requireMatterAccess(db, matterId, id);
-      requireMatterWriter(db, matter.matter_id, id);
+      requireMatterWriter(db, matter.matter_id, id, { action: "add" });
       // 退出模式（第 02 篇 §10：许可到期或未取得、本设备被吊销）：阅读与导出照常，新任务不可用
       const exitMode = deps.governance?.exitMode();
       if (exitMode) throw new DomainError("exit_mode", exitMode.message, 403);
@@ -2254,7 +2372,7 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
     "runs.node_enqueue": (p, id) => {
       assertNotExitMode("转交节点");
       const matter = requireMatterAccess(db, String(p?.matter_id ?? ""), id);
-      requireMatterWriter(db, matter.matter_id, id);
+      requireMatterWriter(db, matter.matter_id, id, { action: "add" });
       const scenario = String(p?.scenario ?? "");
       if (!SCENARIOS.has(scenario)) throw validation(`scenario 须为 ${[...SCENARIOS].join(" / ")}`);
       if (dataLevelOf(matter.confidentiality, matter.consent_status) === "L3b") throw forbidden("当事人限制（L3b）的事项不得转交节点（只在成员电脑上运行）");
@@ -3195,12 +3313,16 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
     // 首页“等你处理 / 继续工作”（UIUX 增量评审 H-1）：本人能看到的事项里最近的任务（只给目标前 24 字与状态，不含正文）
     // ─── 上手清单（第 46 批，主文 §5-5）：按“自己建的事项 / 自己导入的材料 / 自己发起的任务 / 这些任务的成果”判断四步做没做；示例事项不算 ───
     "guide.progress": (_p, id) => {
-      const own = db.all<{ matter_id: string }>(
-        `SELECT matter_id FROM matters WHERE tenant_id = ? AND created_by = ? AND lifecycle <> 'purged'
-            AND matter_id NOT IN (SELECT matter_id FROM sample_matters WHERE removed_at IS NULL)
-          ORDER BY created_at DESC`,
-        [id.tenantId, id.userId],
+      // 第 73 批：第 1 步“建事项”按“我在其中、未删除的事项”算（含同事把我加进的团队共享事项——他已有事项可办）；
+      // created_matters = 其中我自己建的，shared_matters = 同事建、把我加进来的
+      const own = db.all<{ matter_id: string; created_by: string }>(
+        `SELECT m.matter_id, m.created_by FROM matters m JOIN matter_members mm ON mm.matter_id = m.matter_id AND mm.user_id = ? AND mm.removed_at IS NULL
+          WHERE m.tenant_id = ? AND m.lifecycle <> 'purged'
+            AND m.matter_id NOT IN (SELECT matter_id FROM sample_matters WHERE removed_at IS NULL)
+          ORDER BY m.created_at DESC`,
+        [id.userId, id.tenantId],
       );
+      const createdByMe = own.filter((m) => m.created_by === id.userId).length;
       const notSample = `matter_id NOT IN (SELECT matter_id FROM sample_matters WHERE removed_at IS NULL)`;
       const docs = db.get<{ n: number; matter_id: string | null }>(
         `SELECT COUNT(*) AS n, MAX(matter_id) AS matter_id FROM document_versions WHERE tenant_id = ? AND uploaded_by = ? AND ${notSample}`,
@@ -3220,10 +3342,12 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
         firm: config.firmSlug,
         user: config.userSlug,
         own_matters: own.length,
+        created_matters: createdByMe,
+        shared_matters: own.length - createdByMe,
         materials: docs?.n ?? 0,
         runs: runCount,
         deliverables: art,
-        // “去做”直达用：最近一个自己的事项、最近一次自己发起的任务
+        // “去做”直达用：最近一个我在其中的事项（含同事加我的团队共享事项）、最近一次自己发起的任务
         latest_matter_id: own[0]?.matter_id ?? null,
         latest_run: runs[0] ? { run_id: runs[0].run_id, matter_id: runs[0].matter_id } : null,
       };
@@ -3431,6 +3555,11 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
               unresolved: db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM egress_records WHERE tenant_id = ? AND outcome = 'unknown' AND json_extract(note, '$.reconcile') = 'pending'`, [id.tenantId])?.n ?? 0,
             }
           : null,
+        // 第 73 批（D-309，契约 §2.6）：同事之间同步到期前 7 天提醒（侧栏与团队页）；没开通、开发形态或还早为 null
+        share_relay_expiring: (() => {
+          const eff = deps.governance?.effectivePolicy() ?? null;
+          return eff && eff.source === "control_plane" ? expiringOf(eff.body.share_relay === "allow" ? "allowed" : "not_allowed", eff.expires_at, Date.now()) : null;
+        })(),
         note: config.env.ZR_MODEL_PROVIDER === "mock" || !config.env.ZR_MODEL_PROVIDER ? "当前为离线 mock 提供方：模型推理在本机模拟，无网络外发" : "真实模型链路：出站一律经出站闸门进程（唯一出口）",
       };
     },
@@ -3769,7 +3898,12 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
     },
     // 我的写作偏好（v9.4 第 22 批，C1 #29）：只存格式与文风，按律师本人存在本机
     // AI 辅助授权的律师设置（第 48 批 D-202；第 51 批 D-216 起只用于预填常用条款出处，不再替新事项自动记录）
-    "ai_authorization.get": (_p, id) => aiAuthorizationOf(id.tenantId, id.userId),
+    // 第 73 批（P2-3）：给 matter_id 时按事项范围给次处理者清单与数据去向（授权卡、重新确认据此）
+    "ai_authorization.get": (p, id) => {
+      const mid = typeof p?.matter_id === "string" && p.matter_id ? p.matter_id : null;
+      const m = mid ? (requireMatterAccess(db, mid, id) as { matter_id: string; collab_scope: string }) : null;
+      return aiAuthorizationOf(id.tenantId, id.userId, m);
+    },
     "ai_authorization.set": (p, id) => {
       const hasTerms = p?.engagement_terms !== undefined;
       const hasRef = p?.default_ref !== undefined;
@@ -3874,7 +4008,7 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
     // 把一份范本放进事项作为参考材料（律师自己选的事项）：之后起草合同、从范本整理审查要点等方法按事项材料使用——这时才随任务发给 AI
     "firm_templates.to_matter": async (p, id) => {
       const matter = requireMatterAccess(db, String(p?.matter_id ?? ""), id);
-      requireMatterWriter(db, matter.matter_id, id);
+      requireMatterWriter(db, matter.matter_id, id, { action: "add" });
       const { template, clauses } = getTemplate(db, id.tenantId, String(p?.template_id ?? ""));
       const bytes = createDocx(template.title, clauses.map((c) => ({ heading: "", paragraphs: c.text.split("\n") })), { mark: false });
       const r = (await api["materials.import"]!({ matter_id: matter.matter_id, data_base64: bytes.toString("base64"), filename: `${template.title}（本所范本）.docx`, mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }, id)) as { document_version_id: string; filename?: string };
@@ -4526,13 +4660,13 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
     },
 
     // ─── 事项成员与密钥分发（§5.3：加入补包裹、移出轮换密钥） ───
-    "matters.members.add": (p, id) => {
+    "matters.members.add": async (p, id) => {
       const matter = requireMatterAccess(db, String(p?.matter_id ?? ""), id);
       // 成员链（第 12 批）：先补写到期的吊销标记、刷新投影（下面的负责人检查读投影）
       refreshChain(chainDeps(id), matter.matter_id);
-      requireMatterOwner(db, matter.matter_id, id);
-      requireRelayController(matter.matter_id, "加入成员");
-      requireNoSyncAlert(matter.matter_id, "加入成员");
+      requireMatterOwner(db, matter.matter_id, id, "只有事项负责人能加人或移出同事");
+      requireRelayController(matter.matter_id, "加人");
+      requireNoSyncAlert(matter.matter_id, "加人");
       // 结案或已删除的事项不再加入成员（复核 C-A05；须先重新打开）
       requireActiveMatter(db, matter.matter_id);
       const userId = String(p?.user_id ?? "");
@@ -4540,66 +4674,38 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
       const matterRole = String(p?.matter_role ?? "editor");
       if (!["owner", "editor", "reviewer", "issuer", "viewer"].includes(matterRole)) throw validation("matter_role 非法");
       // 中继控制成员降为非负责人之前须先移交（第 12 批：否则此后谁都不能在中继上调整成员、轮换密钥）
-      if (matterRole !== "owner" && deps.shareRelay?.controllerOf(matter.matter_id) === userId) throw forbidden("对方是这个事项在中软共享中继上的控制成员：请先把控制成员移交给另一位负责人，再调整其角色");
-      // 成员链（第 12 批）：加人与改角色是成员事件，带对方在用设备在当前纪元的包裹摘要
-      if (hasChain(db, matter.matter_id)) {
-        const r = db.tx(() => {
-          db.run(`INSERT OR IGNORE INTO users (user_id, tenant_id, display_name) VALUES (?,?,?)`, [userId, id.tenantId, userId]);
-          db.run(`INSERT OR IGNORE INTO memberships (membership_id, tenant_id, user_id, role) VALUES (?,?,?,'lawyer')`, [newId("membership"), id.tenantId, userId]);
-          return addOrUpdateMember(chainDeps(id), matter.matter_id, userId, matterRole);
-        });
-        audit(db, id, "matter.member_add", "matter", matter.matter_id, userId, keyctx);
-        return {
-          matter_id: matter.matter_id,
-          user_id: userId,
-          epoch: r.epoch,
-          devices_wrapped: r.wrapped,
-          note:
-            r.wrapped > 0
-              ? "已按当前密钥纪元为对方 active 设备补包裹（对方设备方可解事项密钥）；变更已记入成员链"
-              : "变更已记入成员链；对方的设备（含之后登记的）由负责人的电脑在同步时自动补发密钥",
-        };
+      if (matterRole !== "owner" && deps.shareRelay?.controllerOf(matter.matter_id) === userId) {
+        const nm = displayNameOf(userId) ?? userId;
+        const roleText = matterRole === "viewer" ? "只看" : matterRole === "editor" ? "一起办" : "非负责人";
+        // 律师端没有移交入口（matters.relay_handoff 只在内核）：请管理员协助
+        throw new DomainError("forbidden", `${nm}负责这个事项与同事之间的同步，不能改成${roleText}：请联系管理员`, 403, { reason: "relay_controller_role_change", controller_user_id: userId, controller_name: nm });
       }
-      const epoch = currentMatterEpoch(db, matter.matter_id);
-      const devices = db.all<{ device_id: string; enc_pub_pem: string }>(
-        `SELECT device_id, enc_pub_pem FROM devices WHERE tenant_id = ? AND member_id = ? AND status = 'active'`,
-        [id.tenantId, userId],
-      );
-      const rowLamport = nextMemberLamport(db, matter.matter_id);
-      db.tx(() => {
-        db.run(`INSERT OR IGNORE INTO users (user_id, tenant_id, display_name) VALUES (?,?,?)`, [userId, id.tenantId, userId]);
-        db.run(`INSERT OR IGNORE INTO memberships (membership_id, tenant_id, user_id, role) VALUES (?,?,?,'lawyer')`, [newId("membership"), id.tenantId, userId]);
-        // 曾墓碑的行：复活须显式授权动作（清除墓碑并刷新作者权威/行 lamport），不是同步副作用
-        db.run(
-          `INSERT INTO matter_members (matter_id, user_id, matter_role, added_by, removed_at, removed_lamport, author_device, row_lamport)
-           VALUES (?,?,?,?,NULL,NULL,?,?)
-           ON CONFLICT(matter_id, user_id) DO UPDATE SET matter_role = excluded.matter_role, removed_at = NULL, removed_lamport = NULL,
-             -- 移出后加回：加入时刻刷新，导出按水位才会再带上这一行（第 11 批复核 S11B 既有缺陷：否则对端一直停在“已移出”）
-             added_at = excluded.added_at,
-             author_device = excluded.author_device, row_lamport = excluded.row_lamport`,
-          [matter.matter_id, userId, matterRole, id.userId, keyctx.device.deviceId, rowLamport],
-        );
-        if (devices.length > 0) {
-          // 解出当前纪元事项密钥（本机设备包裹行），为对方每台 active 设备补包裹
-          const myWrapped = db.get<{ wrapped_key: string }>(`SELECT wrapped_key FROM matter_keys WHERE matter_id = ? AND epoch = ? AND wrapped_for = ?`, [
-            matter.matter_id,
-            epoch,
-            keyctx.device.deviceId,
-          ]);
-          if (!myWrapped) throw new DomainError("internal", "本机缺少当前纪元事项密钥包裹，无法为新成员补包裹", 500);
-          const matterKey = unwrapMatterKey(myWrapped.wrapped_key, keyctx.device.keys.encPrivateKeyPem);
-          for (const d of devices) {
-            db.run(`INSERT OR IGNORE INTO matter_keys (matter_id, epoch, wrapped_for, wrapped_key) VALUES (?,?,?,?)`, [matter.matter_id, epoch, d.device_id, wrapMatterKey(matterKey, d.enc_pub_pem)]);
-          }
-        }
+      // 第 73 批（D-308，契约 §2.4）：账号工作空间里只认团队同事名单里在用的成员（连不上用缓存；缓存也没有 → roster_unavailable），存名单里的真实姓名
+      const roster = await rosterForMutation(id);
+      const name = roster ? requireRosterActive(roster, userId).name : displayNameOf(userId, null);
+      // 成员链（第 12 批）：加人与改角色是成员事件，带对方在用设备在当前纪元的包裹摘要
+      const chained = hasChain(db, matter.matter_id);
+      const r = db.tx(() => {
+        noteMemberUser(id, userId, name);
+        return chained ? addOrUpdateMember(chainDeps(id), matter.matter_id, userId, matterRole) : addMemberRows(id, matter.matter_id, userId, matterRole);
       });
       audit(db, id, "matter.member_add", "matter", matter.matter_id, userId, keyctx);
+      const canReceive = canReceiveOf(userId, id);
       return {
         matter_id: matter.matter_id,
         user_id: userId,
-        epoch,
-        devices_wrapped: devices.length,
-        note: devices.length > 0 ? "已按当前密钥纪元为对方 active 设备补包裹（对方设备方可解事项密钥）" : "对方尚无登记设备：其设备登记后需重新执行补包裹",
+        name: name ?? userId,
+        epoch: r.epoch,
+        devices_wrapped: r.wrapped,
+        can_receive: canReceive,
+        lawyer_note: memberAddedText(name ?? userId, r.wrapped, canReceive, matter.matter_id),
+        note: chained
+          ? r.wrapped > 0
+            ? "已按当前密钥纪元为对方 active 设备补包裹（对方设备方可解事项密钥）；变更已记入成员链"
+            : "变更已记入成员链；对方的设备（含之后登记的）由负责人的电脑在同步时自动补发密钥"
+          : r.wrapped > 0
+            ? "已按当前密钥纪元为对方 active 设备补包裹（对方设备方可解事项密钥）"
+            : "对方尚无登记设备：其设备登记后需重新执行补包裹",
       };
     },
 
@@ -4607,9 +4713,9 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
       const matter = requireMatterAccess(db, String(p?.matter_id ?? ""), id);
       // 成员链（第 12 批）：先补写到期的吊销标记、刷新投影（下面的负责人检查读投影）
       refreshChain(chainDeps(id), matter.matter_id);
-      requireMatterOwner(db, matter.matter_id, id);
-      requireRelayController(matter.matter_id, "移出成员");
-      requireNoSyncAlert(matter.matter_id, "移出成员");
+      requireMatterOwner(db, matter.matter_id, id, "只有事项负责人能加人或移出同事");
+      requireRelayController(matter.matter_id, "移出同事");
+      requireNoSyncAlert(matter.matter_id, "移出同事");
       const userId = String(p?.user_id ?? "");
       const target = db.get<{ matter_role: string }>(`SELECT matter_role FROM matter_members WHERE matter_id = ? AND user_id = ? AND removed_at IS NULL`, [matter.matter_id, userId]);
       if (!target) throw notFound("事项成员");
@@ -4623,6 +4729,9 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
         throw validation(allStopped ? "他的电脑都已停用，但这台电脑不知道他是否已离所（也可能正在换电脑）：确认他已离所后再移出" : "不能移出事项负责人（须先移交负责人）", allStopped ? { reason: "departed_unconfirmed" } : undefined);
       }
       const removeAction = target.matter_role === "owner" ? "matter.member_remove_departed" : "matter.member_remove";
+      // 第 73 批（D-308，契约 §2.4）：移出的结果说明——他此后拿不到新内容；已同步到他电脑上的不会被收回
+      const removedName = displayNameOf(userId) ?? userId;
+      const removedText = `已把${removedName}移出这个事项：他的电脑拿不到此后的新内容；已同步到他电脑上的不会被收回`;
       let newEpoch = 0;
       let wrapped = 0;
       // 成员链（第 12 批）：移出与轮换写在同一条成员事件里（新纪元只包给链上未移出成员的在用设备）
@@ -4632,8 +4741,10 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
         return {
           matter_id: matter.matter_id,
           removed: userId,
+          name: removedName,
           new_epoch: r.epoch,
           devices_wrapped: r.wrapped,
+          lawyer_note: removedText,
           note: "已轮换事项密钥（新纪元）：移出成员的设备拿不到新密钥；其历史签名与旧纪元包裹行保留；变更已记入成员链",
         };
       }
@@ -4671,10 +4782,122 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
       return {
         matter_id: matter.matter_id,
         removed: userId,
+        name: removedName,
         new_epoch: newEpoch,
         devices_wrapped: wrapped,
+        lawyer_note: removedText,
         note: "已轮换事项密钥（新纪元）：移出成员的设备拿不到新密钥；其历史签名与旧纪元包裹行保留",
       };
+    },
+
+    // ─── 第 73 批（V47，契约 02 §2.1、§2.3）：同事名单与事项成员视图（律师可调） ───
+    "team.roster": async (_p, id) => {
+      const r = await loadRoster(id, 60_000);
+      return {
+        available: r.available,
+        ...(r.available ? {} : { reason: r.reason }),
+        fetched_at: r.fetched_at,
+        members: r.members.map((m) => ({ user_id: m.user_id, member_slug: m.member_slug, name: m.name, role: m.role, status: m.status, seat: m.seat, can_receive: m.status === "active" && canReceiveOf(m.user_id, id), is_me: m.user_id === id.userId })),
+      };
+    },
+    // 第 73 批（实拍补）：管理员开通同事之间同步后，成员电脑原要等下一次控制面同步（缺省 10 分钟）才知道——界面打开团队页、事项成员页、
+    // 侧栏团队共享提示可见时调这里：同步状态还是“没开通 / 不知道”且距上次控制面同步超过 60 秒才立即同步一次（已有同步在跑就等它）；
+    // 已开通、没配中继的不同步；节流对没开通的律所同样有效（界面再频繁地调也至多每 60 秒一次）
+    "team.refresh_share_state": async (p, id) => {
+      const mid = typeof p?.matter_id === "string" && p.matter_id ? (requireMatterAccess(db, p.matter_id, id).matter_id as string) : null;
+      const team = mid ? db.get<{ collab_scope: string }>(`SELECT collab_scope FROM matters WHERE matter_id = ?`, [mid])?.collab_scope === CollabScope.team : false;
+      const stateNow = () => syncStateOf(mid ?? "", team);
+      const cp = deps.controlPlane;
+      // 第 73 批（P2-2）：给了团队共享事项、本机不是负责人时顺带核对是否已被移出（每个事项至多每 60 秒一次）
+      if (mid && team && deps.shareRelay) await deps.shareRelay.probeRemoved(mid).catch(() => false);
+      const before = stateNow();
+      // 第 73 批（P2-1）：没有席位也可能刚分配——同样按节流同步一次（取到席位令牌后放下中继凭据的退避）
+      if (!cp || deps.governance?.exitMode() || !(before === "not_allowed" || before === "unknown" || before === "no_seat")) return { refreshed: false, sync: before };
+      const inflight = cp.syncInFlight();
+      if (inflight) {
+        await inflight.catch(() => null);
+      } else {
+        // 复测 P3-C：只按“上次由这里发起的同步”节流（例行同步不计）——打开团队页即立即刷新，再频繁地打开也至多每 60 秒一次
+        if (Date.now() - shareRefreshAt < SHARE_REFRESH_MIN_MS) return { refreshed: false, sync: before };
+        shareRefreshAt = Date.now();
+        await cp.sync().catch(() => null);
+      }
+      if (before === "no_seat" && deps.governance?.seatToken()) deps.shareRelay?.clearCredentialBackoff();
+      const after = stateNow();
+      // 规则刚放开：立刻收发一次（收件循环在不能收发时 30 秒才再看一次）
+      if (after !== before && deps.shareRelay && !deps.shareRelay.blocked()) void deps.shareRelay.sync().catch(() => undefined);
+      return { refreshed: true, sync: after };
+    },
+    "matters.members.list": async (p, id) => {
+      const matter = requireMatterAccess(db, String(p?.matter_id ?? ""), id);
+      // 名单只用来标姓名与“已离开团队”：两分钟内取过的直接用；取不到用缓存；会话失效等也不挡住看成员
+      let roster: Map<string, RosterMember> | null = null;
+      try {
+        const r = await loadRoster(id, 120_000);
+        roster = r.members.length > 0 ? new Map(r.members.map((m) => [m.user_id, m])) : null;
+      } catch {
+        const c = cachedRoster(id);
+        roster = c ? new Map(c.members.map((m) => [m.user_id, m])) : null;
+      }
+      const nodeMembers = new Set(db.all<{ member_id: string }>(`SELECT DISTINCT member_id FROM devices WHERE tenant_id = ? AND role = 'node'`, [id.tenantId]).map((r) => r.member_id));
+      const rows = db
+        .all<{ user_id: string; matter_role: string; added_at: string }>(`SELECT user_id, matter_role, added_at FROM matter_members WHERE matter_id = ? AND removed_at IS NULL ORDER BY added_at, user_id`, [matter.matter_id])
+        .filter((r) => r.user_id !== "node_service" && !nodeMembers.has(r.user_id));
+      const myRole = rows.find((r) => r.user_id === id.userId)?.matter_role ?? null;
+      const isOwner = myRole === "owner";
+      const team = matter.collab_scope === CollabScope.team;
+      // 第 73 批（P2-2）：本机不是负责人的团队共享事项：向中继核对本机还是不是读者（每个事项至多每 60 秒一次）
+      const removedMe = team && !isOwner && deps.shareRelay ? await deps.shareRelay.probeRemoved(matter.matter_id).catch(() => removedFromMatter(matter.matter_id)) : false;
+      // 能不能在这台电脑上改成员（负责人；经中继同步的须是控制成员；本机无法确认负责人时不能；结案的不加人）
+      const foreign = deps.shareRelay?.foreignController(matter.matter_id) ?? null;
+      const blocked = !!db.get(`SELECT 1 AS x FROM sync_alerts WHERE matter_id = ? AND kind = 'owner_unverifiable'`, [matter.matter_id]);
+      const members = rows
+        .map((r) => {
+          const m = roster?.get(r.user_id) ?? null;
+          return {
+            user_id: r.user_id,
+            name: m?.name ?? displayNameOf(r.user_id) ?? r.user_id,
+            matter_role: r.matter_role,
+            can_receive: canReceiveOf(r.user_id, id),
+            seat: m?.seat ?? null,
+            departed: !!m && m.status !== "active",
+            is_me: r.user_id === id.userId,
+            added_at: r.added_at,
+          };
+        })
+        .sort((a, b) => (a.matter_role === "owner" ? 0 : 1) - (b.matter_role === "owner" ? 0 : 1) || a.added_at.localeCompare(b.added_at));
+      return {
+        matter_id: matter.matter_id,
+        collab_scope: matter.collab_scope,
+        my_role: myRole,
+        is_owner: isOwner,
+        can_manage: isOwner && !foreign && !blocked && !removedMe && (matter.lifecycle ?? "active") === "active",
+        removed_me: removedMe,
+        relay_controller: deps.shareRelay?.controllerOf(matter.matter_id) ?? null,
+        members,
+        sync: syncStateOf(matter.matter_id, team),
+      };
+    },
+
+    // ─── 第 73 批（D-309，契约 §2.6）：同事之间同步的开通与续期（管理员电脑；签名在本机管理员设备上做） ───
+    "firm_policy.share_relay_status": async (_p, id) => shareRelayStatusView(id),
+    "firm_policy.share_relay_enable": async (p, id) => {
+      requireAdminDevice(id);
+      if (!relayConfigured()) throw validation("中软还没开通同事之间同步（共享通道还没部署）：开通后再来", { reason: "relay_not_configured" });
+      const ttl = ttlDaysParam(p?.ttl_days);
+      const st = await shareRelayStatusView(id);
+      if (st.state === "allowed") return { ...st, published: false, lawyer_note: "同事之间同步已开通" };
+      // D-311（取代 D-94 的“须中软重置”约定）：关闭后再开通与首次开通同一流程（管理员签名门限）；控制面与中继都只看现行规则，不需要也不拦
+      const body = shareRelayBodies().enable;
+      if (!body) throw new DomainError("provider_unavailable", "这台电脑上的律所策略认不出：请先同步一次再开通", 502, { reason: "policy_unrecognized" });
+      return shareRelaySign(id, "enable", body, ttl);
+    },
+    "firm_policy.share_relay_renew": async (p, id) => {
+      requireAdminDevice(id);
+      if (!relayConfigured()) throw validation("中软还没开通同事之间同步（共享通道还没部署）", { reason: "relay_not_configured" });
+      const body = shareRelayBodies().renew;
+      if (!body) throw validation("同事之间同步还没开通：请先开通", { reason: "not_enabled" });
+      return shareRelaySign(id, "renew", body, ttlDaysParam(p?.ttl_days));
     },
 
     // ─── 开放导出（§7.3：事件 JSON Lines + 证书与签发证明，可离线验签，不靠数据锁定续费） ───
@@ -5238,8 +5461,8 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
       if (rotate) refreshChain(chainDeps(id), matter.matter_id);
       // 团队事项的新纪元只认负责人签发的包裹（D-93）：非负责人轮换不会传播，还会与负责人下次轮换撞纪元号（第二轮复核 S11A-20）
       if (rotate) requireMatterOwner(db, matter.matter_id, id, "轮换事项密钥需要事项负责人角色（团队事项的新纪元只认负责人签发的包裹）");
-      if (rotate) requireRelayController(matter.matter_id, "轮换事项密钥");
-      if (rotate) requireNoSyncAlert(matter.matter_id, "轮换事项密钥");
+      if (rotate) requireRelayController(matter.matter_id, "重新加密这个事项");
+      if (rotate) requireNoSyncAlert(matter.matter_id, "重新加密这个事项");
       const revokeDeviceIds: string[] = Array.isArray(p?.revoke_device_ids) ? p.revoke_device_ids.map(String) : [];
       let rotatedEpoch = epoch;
       db.tx(() => {
@@ -5835,6 +6058,8 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
       const aid = memberAidOf(p?.aid);
       if (!(await has("workspaces"))) return unsupported();
       const r = await accountCp(() => cp.account("POST", `/v1/firm/members/${aid}/${action}`, body));
+      // 第 73 批：同事名单随之变化（移出、停用、改角色）——下次用名单时现取
+      rosterMem = null;
       audit(db, id, `team.member_${action}`, "user", aid, undefined, keyctx);
       return { supported: true, ok: true, ...r };
     }
@@ -5870,6 +6095,371 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
     if (row?.matter_role !== "owner") throw forbidden(msg);
   }
 
+  // ─── 第 73 批（V47，D-307～D-309，契约 02 §2）：团队共享事项的前置条件、同事名单与成员视图 ───
+
+  /** 本批契约错误码（@zr-legal/domain FaultCode 第 73 批的五项；界面按 code 分辨，原因在 detail.reason）。 */
+  function teamFault(code: Extract<FaultCode, "team_scope_unavailable" | "member_not_in_team" | "roster_unavailable" | "scope_irreversible" | "team_scope_conflict">, msg: string, status = 409, detail?: Record<string, unknown>): DomainError {
+    return new DomainError(code, msg, status, detail);
+  }
+
+  /** 账号体系（第 44 批起）的工作空间：登录过（本机有会话）或记下过工作空间类型。旧律所体系（开通码 / 本机开发形态）不是。 */
+  function accountMode(): boolean {
+    return !!deps.controlPlane && !!deps.account && (!!deps.account.session() || !!deps.account.meta?.()?.workspace_kind);
+  }
+
+  /** 这台电脑的证书是谁签的（与 kernel.status.device_issuer 同一口径）。 */
+  function myIssuer(): "firm_root" | "account_ca" {
+    return deps.deviceShare?.issuer() ?? ((keyctx.device.cert as { issuer?: unknown }).issuer === "account_ca" ? "account_ca" : "firm_root");
+  }
+
+  /**
+   * 这位成员的电脑能否接收团队共享事项：本机设备表里有至少一台在用、未墓碑的律所根签电脑（本机设备表只收律所根签的证书，
+   * 账号签发钥直接登记的电脑不进表——governance.applyDirectory）；本人看这台电脑的证书。
+   */
+  function canReceiveOf(userId: string, id: Identity): boolean {
+    if (userId === id.userId) return myIssuer() === "firm_root";
+    return db
+      .all<{ device_id: string }>(`SELECT device_id FROM devices WHERE tenant_id = ? AND member_id = ? AND status = 'active' AND role <> 'node'`, [id.tenantId, userId])
+      .some((d) => !deviceTombstoned(db, d.device_id));
+  }
+
+  /**
+   * 选“团队共享”的前置（D-307，契约 §2.2）：团队空间；这台电脑的证书由律所根签发；不是“客户要求不上云”（L3b）。
+   * 任一不满足 → team_scope_unavailable（detail.reason：personal_workspace / workspace_unknown / device_not_confirmed / client_no_cloud）。
+   * 旧律所体系（不是账号工作空间）没有个人空间之分，只核证书与 L3b。
+   */
+  async function assertTeamScopeAllowed(id: Identity, level: { confidentiality: string | null | undefined; consent_status: string | null | undefined }): Promise<void> {
+    if (accountMode()) {
+      let kind = deps.account?.meta?.()?.workspace_kind ?? null;
+      if (!kind && deps.controlPlane) {
+        // 还没记下工作空间类型（旧档案）：取一次本人资料补上；取不到按不知道处理
+        try {
+          deps.account?.noteMeta?.(await deps.controlPlane.account("GET", "/v1/auth/me"));
+        } catch {
+          // 见下
+        }
+        kind = deps.account?.meta?.()?.workspace_kind ?? null;
+      }
+      if (kind === "personal") throw teamFault("team_scope_unavailable", "个人空间里的事项只在你自己的电脑上：要用团队共享，请先切换到团队空间（或把个人工作室升级为团队）", 409, { reason: "personal_workspace" });
+      if (kind !== "team") throw teamFault("team_scope_unavailable", "还没确认当前是团队空间：请联网后再试", 409, { reason: "workspace_unknown" });
+    }
+    if (myIssuer() !== "firm_root") {
+      throw teamFault("team_scope_unavailable", "这台电脑还不能接收团队共享事项：请在 设置 → 团队 里申请，管理员确认后就能建团队共享事项", 409, { reason: "device_not_confirmed" });
+    }
+    if (dataLevelOf(level.confidentiality ?? "normal", level.consent_status ?? null) === "L3b") {
+      throw teamFault("team_scope_unavailable", "客户要求不上云的事项不能设为团队共享：同事之间同步要经中软转送加密内容，与客户的要求不符", 409, { reason: "client_no_cloud" });
+    }
+  }
+
+  /** matters.create 的 members 参数（契约 §2.2）：[{ user_id, matter_role: editor | viewer }]；去重、去掉本人（本人是负责人）。 */
+  function teamMembersParam(raw: unknown, id: Identity): { user_id: string; matter_role: "editor" | "viewer" }[] {
+    if (raw === undefined || raw === null) return [];
+    if (!Array.isArray(raw)) throw validation("members 须为数组：[{ user_id, matter_role }]");
+    if (raw.length > 100) throw validation("一次至多加 100 位同事");
+    const out = new Map<string, "editor" | "viewer">();
+    for (const x of raw) {
+      const uid = (x as { user_id?: unknown })?.user_id;
+      const role = (x as { matter_role?: unknown })?.matter_role ?? "editor";
+      if (typeof uid !== "string" || !/^usr_[A-Za-z0-9_-]{1,120}$/.test(uid)) throw validation("members 里的 user_id 不合法");
+      if (role !== "editor" && role !== "viewer") throw validation("members 里的 matter_role 须为 editor（一起办）或 viewer（只看）");
+      if (uid === id.userId) continue;
+      out.set(uid, role);
+    }
+    return [...out].map(([user_id, matter_role]) => ({ user_id, matter_role }));
+  }
+
+  /** team.refresh_share_state 的节流：距上次由这里发起的同步不足此间隔不再同步（例行同步不计；缺省 60 秒；用例可调短，至少 1 秒）。 */
+  const SHARE_REFRESH_MIN_MS = Math.min(600_000, Math.max(1_000, Number(config.env.ZR_SHARE_REFRESH_MS ?? 60_000) || 60_000));
+  let shareRefreshAt = 0;
+
+  /** 同事名单在内存里的一份（最近一次成功取到或读到的缓存）。 */
+  let rosterMem: { tid: string; at: number; fetched_at: string; members: RosterMember[]; live: boolean } | null = null;
+  type RosterView =
+    | { available: true; members: RosterMember[]; fetched_at: string }
+    | { available: false; reason: "personal_workspace" | "offline" | "not_supported"; members: RosterMember[]; fetched_at: string | null };
+
+  /** 本机缓存的名单（内存优先，其次磁盘；没有 = null）。 */
+  function cachedRoster(id: Identity): { fetched_at: string; members: RosterMember[] } | null {
+    if (rosterMem && rosterMem.tid === id.tenantId) return { fetched_at: rosterMem.fetched_at, members: rosterMem.members };
+    const c = readRosterCache(keyctx.keysDir, id.tenantId);
+    if (!c) return null;
+    rosterMem = { tid: id.tenantId, at: 0, fetched_at: c.fetched_at, members: c.members, live: false };
+    return { fetched_at: c.fetched_at, members: c.members };
+  }
+
+  /**
+   * 同事名单（契约 §2.1）：经出站闸门调 GET /v1/team/roster；maxAgeMs 内取过的直接用。连不上 → 本机缓存（available:false, reason:offline）；
+   * 个人空间 → personal_workspace；旧律所体系、旧云端、闸门没放行这条路径 → not_supported。会话失效等其它失败照常抛出（账号层已提示重新登录）。
+   */
+  async function loadRoster(id: Identity, maxAgeMs: number): Promise<RosterView> {
+    if (!accountMode() || !deps.controlPlane) return { available: false, reason: "not_supported", members: [], fetched_at: null };
+    if (deps.account?.meta?.()?.workspace_kind === "personal") return { available: false, reason: "personal_workspace", members: [], fetched_at: null };
+    if (rosterMem && rosterMem.tid === id.tenantId && rosterMem.live && Date.now() - rosterMem.at < maxAgeMs) return { available: true, members: rosterMem.members, fetched_at: rosterMem.fetched_at };
+    const offline = (code: string): RosterView => {
+      slog.event("KERNEL_TEAM_ROSTER", { outcome: "cache_used", reason: code });
+      const c = cachedRoster(id);
+      return { available: false, reason: "offline", members: c?.members ?? [], fetched_at: c?.fetched_at ?? null };
+    };
+    // 云端答了 /v1/meta 而没有这项能力：旧云端（取不到 /v1/meta 不算——照常去取，失败再按连不上）
+    const fs = (await deps.account?.features?.().catch(() => null)) ?? null;
+    if (fs && !fs.includes("team_roster")) return { available: false, reason: "not_supported", members: [], fetched_at: null };
+    let raw: Record<string, unknown>;
+    try {
+      raw = await deps.controlPlane.account("GET", "/v1/team/roster");
+    } catch (e) {
+      const code = String((e as { code?: unknown })?.code ?? (e as Error)?.message ?? "error");
+      if (code === "team_only") return { available: false, reason: "personal_workspace", members: [], fetched_at: null };
+      if (rosterUnsupportedCode(code)) return { available: false, reason: "not_supported", members: [], fetched_at: null };
+      if (rosterOfflineCode(code)) {
+        slog.event("KERNEL_TEAM_ROSTER", { outcome: "fetch_failed", reason: /^[a-z0-9_]{1,60}$/.test(code) ? code : "other" });
+        return offline(/^[a-z0-9_]{1,60}$/.test(code) ? code : "other");
+      }
+      return accountCp(() => Promise.reject(e));
+    }
+    const members = rosterFromReply(raw, id.tenantId);
+    if (!members) {
+      slog.event("KERNEL_TEAM_ROSTER", { outcome: "invalid" });
+      return offline("invalid");
+    }
+    const at = new Date();
+    rosterMem = { tid: id.tenantId, at: at.getTime(), fetched_at: at.toISOString(), members, live: true };
+    try {
+      writeRosterCache(keyctx.keysDir, id.tenantId, members, at);
+    } catch (e) {
+      slog.event("KERNEL_TEAM_ROSTER", { outcome: "cache_failed", ...errFields(e) });
+    }
+    return { available: true, members, fetched_at: rosterMem.fetched_at };
+  }
+
+  /**
+   * 加人 / 建团队事项时核对名单用（契约 §2.2、§2.4）：账号工作空间里必须能拿到名单（现取，连不上用缓存）；缓存也没有 → roster_unavailable。
+   * 旧律所体系返回 null（照旧不核对名单——旧体系没有云端名单）。
+   */
+  async function rosterForMutation(id: Identity): Promise<Map<string, RosterMember> | null> {
+    if (!accountMode()) return null;
+    const r = await loadRoster(id, 30_000);
+    if (!r.available && r.reason === "personal_workspace") throw teamFault("team_scope_unavailable", "个人空间里没有同事可加：要用团队共享，请先切换到团队空间", 409, { reason: "personal_workspace" });
+    if (!r.available && (r.reason === "not_supported" || r.members.length === 0)) {
+      throw teamFault(
+        "roster_unavailable",
+        r.reason === "not_supported" ? "云端暂时取不到同事名单（服务还没升级）：请稍后再试，仍不行请联系中软客服" : "连不上云端，这台电脑上也还没有同事名单：联网后再加同事",
+        r.reason === "not_supported" ? 409 : 503,
+        { reason: r.reason },
+      );
+    }
+    return new Map(r.members.map((m) => [m.user_id, m]));
+  }
+
+  /** 名单里在用的成员（不在名单或已停用 / 移出 / 离开 → member_not_in_team）。 */
+  function requireRosterActive(roster: Map<string, RosterMember>, userId: string): RosterMember {
+    const m = roster.get(userId);
+    if (!m) throw teamFault("member_not_in_team", "这位不在团队同事名单里：只能加团队里的同事", 409, { user_id: userId, reason: "not_in_roster" });
+    if (m.status !== "active") throw teamFault("member_not_in_team", `${m.name}已不在团队里（${m.status === "disabled" ? "已停用" : "已离开团队"}）：不能加进事项`, 409, { user_id: userId, reason: m.status });
+    return m;
+  }
+
+  /** 本机记下这位成员（用户与律所成员行）；有名单里的真实姓名就写真实姓名（原先写成编号，界面显示的是编号）。 */
+  function noteMemberUser(id: Identity, userId: string, name: string | null): void {
+    if (name) db.run(`INSERT INTO users (user_id, tenant_id, display_name) VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET display_name = excluded.display_name`, [userId, id.tenantId, name]);
+    else db.run(`INSERT OR IGNORE INTO users (user_id, tenant_id, display_name) VALUES (?,?,?)`, [userId, id.tenantId, userId]);
+    db.run(`INSERT OR IGNORE INTO memberships (membership_id, tenant_id, user_id, role) VALUES (?,?,?,'lawyer')`, [newId("membership"), id.tenantId, userId]);
+  }
+
+  /**
+   * 不在成员链上的加人（第 12 批之前的口径：测试里的旧客户端、或私有事项）：写成员行（曾墓碑的复活须显式授权动作），
+   * 用本机当前纪元的事项密钥给对方在用设备补包裹。在调用方的事务里执行；返回包了几台。
+   */
+  function addMemberRows(id: Identity, matterId: string, userId: string, matterRole: string): { epoch: number; wrapped: number } {
+    const epoch = currentMatterEpoch(db, matterId);
+    const devices = db.all<{ device_id: string; enc_pub_pem: string }>(`SELECT device_id, enc_pub_pem FROM devices WHERE tenant_id = ? AND member_id = ? AND status = 'active'`, [id.tenantId, userId]);
+    const rowLamport = nextMemberLamport(db, matterId);
+    db.run(
+      `INSERT INTO matter_members (matter_id, user_id, matter_role, added_by, removed_at, removed_lamport, author_device, row_lamport)
+       VALUES (?,?,?,?,NULL,NULL,?,?)
+       ON CONFLICT(matter_id, user_id) DO UPDATE SET matter_role = excluded.matter_role, removed_at = NULL, removed_lamport = NULL,
+         -- 移出后加回：加入时刻刷新，导出按水位才会再带上这一行（第 11 批复核 S11B 既有缺陷：否则对端一直停在“已移出”）
+         added_at = excluded.added_at,
+         author_device = excluded.author_device, row_lamport = excluded.row_lamport`,
+      [matterId, userId, matterRole, id.userId, keyctx.device.deviceId, rowLamport],
+    );
+    if (devices.length > 0) {
+      // 解出当前纪元事项密钥（本机设备包裹行），为对方每台 active 设备补包裹
+      const myWrapped = db.get<{ wrapped_key: string }>(`SELECT wrapped_key FROM matter_keys WHERE matter_id = ? AND epoch = ? AND wrapped_for = ?`, [matterId, epoch, keyctx.device.deviceId]);
+      if (!myWrapped) throw new DomainError("internal", "这台电脑还没拿到这个事项的最新内容，暂时不能加人：同步一次后再试", 500, { reason: "own_wrap_missing" });
+      const matterKey = unwrapMatterKey(myWrapped.wrapped_key, keyctx.device.keys.encPrivateKeyPem);
+      for (const d of devices) {
+        db.run(`INSERT OR IGNORE INTO matter_keys (matter_id, epoch, wrapped_for, wrapped_key) VALUES (?,?,?,?)`, [matterId, epoch, d.device_id, wrapMatterKey(matterKey, d.enc_pub_pem)]);
+      }
+    }
+    return { epoch, wrapped: devices.length };
+  }
+
+  /** 加人结果的一句律师话（契约 §2.4、D-310 用语；律师层不讲中继、证书、密钥）。 */
+  function memberAddedText(name: string, wrapped: number, canReceive: boolean, matterId: string): string {
+    const team = db.get<{ collab_scope: string }>(`SELECT collab_scope FROM matters WHERE matter_id = ?`, [matterId])?.collab_scope === CollabScope.team;
+    if (!team) return `已把${name}加进这个事项（这个事项只在你的电脑上：改为团队共享后他才会收到）`;
+    if (!canReceive) return `已把${name}加进这个事项。他的电脑还不能接收：请他在 设置 → 团队 里申请，管理员确认后自动收到`;
+    const s = syncStateOf(matterId, true);
+    if ((s === "not_configured" || s === "not_allowed") && !config.syncShareDir) return `已把${name}加进这个事项。所内开通同事之间同步后，他才会收到`;
+    return wrapped > 0 ? `已把${name}加进这个事项：同步后他的电脑就能打开` : `已把${name}加进这个事项：他的电脑下次同步时收到`;
+  }
+
+  /**
+   * 同事之间同步的状态（契约 §2.3 sync）：not_configured（没配中继）/ not_allowed（所内还没开通，如实，不再折成“不知道”）/
+   * unreachable（最近一次收发连不上）/ pending（这个事项有还没发出的内容）/ ok / unknown（退出模式等）。
+   */
+  function syncStateOf(matterId: string, team: boolean): "ok" | "not_configured" | "not_allowed" | "unreachable" | "pending" | "unknown" | "no_seat" | "removed" {
+    const sr = deps.shareRelay;
+    if (!sr) return "not_configured";
+    // 第 73 批（P2-2）：负责人已把本机移出这个团队共享事项
+    if (team && matterId && sr.removedFrom(matterId)) return "removed";
+    const st = sr.status() as { blocked: string | null; policy_fallback?: boolean; push_last_ok_at?: string | null; push_last_error?: string | null; push_last_error_at?: string | null; pull_last_ok_at?: string | null; pull_last_error?: string | null; pull_last_error_at?: string | null };
+    if (st.blocked === "not_configured") return "not_configured";
+    // 第 73 批（W3 提请，03 第四行）：律所规则过期 / 没收到而回退（不是所内没开通）→ unknown；只有真正没开通才回 not_allowed
+    if (st.blocked === "not_allowed") return st.policy_fallback ? "unknown" : "not_allowed";
+    if (st.blocked) return "unknown";
+    // 第 73 批（P2-1）：没有席位——申领同事之间同步的凭据被拒（credential_no_seat），或控制面同步时席位一步答 no_seat 而本机没有席位令牌
+    // 管理员释放 / 收回了名额（seat_revoked）同样按没有席位说（11-27 实拍：原来只认 no_seat，显示“暂时连不上”）
+    if (seatProblemOf(sr.credentialError(), deps.controlPlane?.lastSync?.steps.seat, !!deps.governance?.seatToken())) return "no_seat";
+    const failedAfterOk = (err: string | null | undefined, errAt: string | null | undefined, okAt: string | null | undefined) => !!err && !!errAt && (!okAt || errAt > okAt) && /timeout|connect|unreachable|gate_|tls_|http_5\d\d|relay_error|credential_/.test(err);
+    if (failedAfterOk(st.push_last_error, st.push_last_error_at, st.push_last_ok_at) || failedAfterOk(st.pull_last_error, st.pull_last_error_at, st.pull_last_ok_at)) return "unreachable";
+    // 团队共享事项：有还没发出的段（退避 / 卡住），或这台电脑还没经中继收发过它（刚建、刚转成团队共享）
+    if (team && (db.get(`SELECT 1 AS x FROM relay_outbox WHERE matter_id = ?`, [matterId]) || !db.get(`SELECT 1 AS x FROM relay_matters WHERE matter_id = ?`, [matterId]))) return "pending";
+    return "ok";
+  }
+
+  /** 管理员设备（与 requireAdminDevice 同一口径，不抛错）。 */
+  function isAdminDevice(id: Identity): boolean {
+    try {
+      requireAdminDevice(id);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** 同事之间同步（共享中继）的地址配置了且接入了控制面。 */
+  function relayConfigured(): boolean {
+    return !!gate?.upstreams?.relay && !!deps.controlPlane;
+  }
+
+  type DraftView = Awaited<ReturnType<ControlPlaneClient["drafts"]>>[number];
+  /** 开通 / 续期的底稿（契约 §2.6）：enable = 当前生效规则 + share_relay；renew = 最后一份已接受策略原样（须已允许 share_relay）。 */
+  function shareRelayBodies(): { enable: FirmPolicyBodyT | null; renew: FirmPolicyBodyT | null } {
+    const gov = deps.governance;
+    if (!gov) return { enable: null, renew: null };
+    const eff = gov.effectivePolicy();
+    const latest = normalizedBody(gov.latestPolicyDoc()?.body ?? null);
+    let enable: FirmPolicyBodyT | null = null;
+    try {
+      enable = enableBodyOf(eff.body);
+    } catch {
+      enable = null;
+    }
+    return { enable, renew: latest && latest.share_relay === "allow" ? latest : null };
+  }
+  /** 等签名的开通 / 续期草稿：本机核验通过、内容与底稿一致、还没发布（不认内容不同的草稿——防止借“开通同步”签下别的改动）。 */
+  function pendingShareRelayDraft(drafts: readonly DraftView[], bodies: ReturnType<typeof shareRelayBodies>): { draft: DraftView; kind: "enable" | "renew" } | null {
+    const pick = (body: FirmPolicyBodyT | null, kind: "enable" | "renew") => {
+      if (!body) return null;
+      const d = [...drafts].filter((x) => x.kind === "policy" && x.valid && sameBody((x.doc as { body?: unknown }).body, body)).sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")))[0];
+      return d ? { draft: d, kind } : null;
+    };
+    return pick(bodies.renew, "renew") ?? pick(bodies.enable, "enable");
+  }
+
+  /** 同事之间同步的状态视图（契约 §2.6 firm_policy.share_relay_status）；drafts 给出时不再取一次。 */
+  async function shareRelayStatusView(id: Identity, drafts?: readonly DraftView[]): Promise<Record<string, unknown>> {
+    const gov = deps.governance;
+    const now = Date.now();
+    const canManage = isAdminDevice(id);
+    const threshold = gov?.adminThreshold() ?? 1;
+    const eff = gov?.effectivePolicy() ?? null;
+    const latest = gov?.latestPolicyDoc() ?? null;
+    const bodies = shareRelayBodies();
+    let list: readonly DraftView[] = drafts ?? [];
+    let draftsError: string | null = null;
+    if (!drafts && canManage) {
+      try {
+        list = await deps.controlPlane!.drafts();
+      } catch (e) {
+        draftsError = /^[a-z0-9_]{1,60}$/.test(String((e as Error)?.message)) ? String((e as Error).message) : "other";
+      }
+    }
+    const pend = pendingShareRelayDraft(list, bodies);
+    const effectiveAllows = eff?.body.share_relay === "allow";
+    const pendingSigs = pend ? signerCount(pend.draft.signed_by) : 0;
+    const state: ShareRelayState = shareRelayStateOf({ effectiveAllows, fallback: eff?.source === "strictest_fallback", latestAllows: normalizedBody(latest?.body ?? null)?.share_relay === "allow", pendingEnable: !!pend && pendingSigs < threshold });
+    const expiresAt = state === "allowed" ? (eff?.expires_at ?? null) : state === "expired" ? (latest?.expires_at ?? null) : null;
+    // 第 73 批：开通后又关闭过（现行规则明确不允许、更早某一版允许过）——只用于显示；再开通与首次开通同一流程（D-311）
+    const closed = shareRelayClosedOf(eff?.source === "control_plane", effectiveAllows, gov?.shareRelayHistory() ?? []);
+    return {
+      relay_configured: relayConfigured(),
+      state,
+      closed: closed.closed,
+      closed_at: closed.closed_at,
+      expires_at: expiresAt,
+      days_left: daysLeftOf(expiresAt, now),
+      expiring: expiringOf(state, expiresAt, now),
+      can_manage: canManage,
+      threshold,
+      signatures: pendingSigs,
+      // 等签名的开通 / 续期草稿（第二位管理员在自己电脑上点“开通”或“续期”即签这一份；也可 firm_policy.sign 带 digest）
+      pending: pend ? { draft_id: pend.draft.draft_id, kind: pend.kind, digest: pend.draft.digest, signatures: pendingSigs, signed_by_me: pend.draft.signed_by_me } : null,
+      // 开通 / 续期时随这次签名一并带上的其它放宽项（不含同事之间同步本身）
+      carry_relaxations: { enable: carriedRelaxations(bodies.enable), renew: bodies.renew ? carriedRelaxations(bodies.renew) : null },
+      fallback_reason: eff?.fallback_reason ?? null,
+      policy_version: eff?.version ?? null,
+      ...(draftsError ? { drafts_error: draftsError } : {}),
+    };
+  }
+
+  /** 有效期（天）：不给按控制面缺省（30 天）；给了须为 1～30 的整数。 */
+  function ttlDaysParam(v: unknown): number | undefined {
+    if (v === undefined || v === null) return undefined;
+    if (!Number.isSafeInteger(v) || (v as number) < 1 || (v as number) > 30) throw validation("ttl_days 须为 1～30 的整数");
+    return v as number;
+  }
+
+  /** 开通 / 续期：找一致的待签草稿（没有就起草）→ 本机签名 → 达门限即发布并同步。 */
+  async function shareRelaySign(id: Identity, kind: "enable" | "renew", body: FirmPolicyBodyT, ttlDays: number | undefined): Promise<Record<string, unknown>> {
+    const cp = deps.controlPlane!;
+    const threshold = deps.governance?.adminThreshold() ?? 1;
+    const drafts = await cpCall(() => cp.drafts());
+    let draft = drafts.filter((x) => x.kind === "policy" && x.valid && sameBody((x.doc as { body?: unknown }).body, body)).sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")))[0] ?? null;
+    if (!draft) {
+      draft = await cpCall(() => cp.createDraft({ kind: "policy", body, ...(ttlDays !== undefined ? { ttl_days: ttlDays } : {}) }));
+      audit(db, id, "firm_policy.draft", "policy", draft.draft_id, sha256Hex(JSON.stringify(draft.relaxations)), keyctx);
+    }
+    if (!draft.valid || !draft.digest) throw new DomainError("provider_unavailable", `草稿没有通过本机核验（${draft.problem ?? "unknown"}）：没有签名`, 502, { reason: "local_check" });
+    if (!draft.signed_by_me) {
+      const d0 = draft;
+      draft = await cpCall(() => cp.signDraft(d0.draft_id, d0.digest!));
+      audit(db, id, "firm_policy.sign", draft.kind, draft.draft_id, sha256Hex(JSON.stringify({ relaxations: draft.relaxations, version: (draft.doc as { version?: number }).version ?? null })), keyctx);
+    }
+    const sigs = signerCount(draft.signed_by);
+    let published = false;
+    if (sigs >= threshold) {
+      const d1 = draft;
+      await cpCall(() => cp.publishDraft(d1.draft_id));
+      audit(db, id, "firm_policy.publish", "draft", draft.draft_id, undefined, keyctx);
+      await cp.sync().catch(() => undefined);
+      published = true;
+    }
+    slog.event("KERNEL_SHARE_RELAY_POLICY", { action: kind, outcome: published ? "published" : "pending_second_signature", signatures: sigs, threshold });
+    const view = await shareRelayStatusView(id, published ? [] : [draft]);
+    return {
+      ...view,
+      published,
+      draft_id: draft.draft_id,
+      lawyer_note: published
+        ? kind === "renew"
+          ? `已续期：同事之间同步继续有效${view.expires_at ? `，到 ${String(view.expires_at).slice(0, 10)}` : ""}`
+          : `已开通同事之间同步${view.expires_at ? `，有效到 ${String(view.expires_at).slice(0, 10)}` : ""}`
+        : `已签名：还需另一位管理员在自己的电脑上确认（${sigs}/${threshold}）`,
+    };
+  }
+
   function requireReminders(): ReminderService {
     if (!deps.reminders) throw new DomainError("provider_unavailable", "提醒功能未启用", 503);
     return deps.reminders;
@@ -5897,7 +6487,7 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
   }
 
   /** 成员写操作门禁（viewer 最小权限）：有效成员（墓碑过滤）且非 viewer；节点身份例外见下。 */
-  function requireMatterWriter(db2: KernelDb, matterId: string, id: Identity, opts?: { allowClosed?: boolean }): void {
+  function requireMatterWriter(db2: KernelDb, matterId: string, id: Identity, opts?: { allowClosed?: boolean; action?: "add" }): void {
     // 数据生命周期（迁移 0021）：已结案事项只读（取消、对账等收尾操作除外）；已删除事项不可写
     const lc = db2.get<{ lifecycle: string }>(`SELECT lifecycle FROM matters WHERE matter_id = ?`, [matterId])?.lifecycle;
     if (lc === "purged" || (lc === "closed" && !opts?.allowClosed)) requireActiveMatter(db2, matterId);
@@ -5909,7 +6499,45 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
     }
     const row = db2.get<{ matter_role: string }>(`SELECT matter_role FROM matter_members WHERE matter_id = ? AND user_id = ? AND removed_at IS NULL`, [matterId, id.userId]);
     if (!row) throw forbidden("你不是该事项成员（或已被移出）");
-    if (row.matter_role === "viewer") throw forbidden("viewer 角色只读：该操作需要编辑及以上角色（最小权限）");
+    // 第 73 批（P2-2）：负责人已把这台电脑的主人移出这个团队共享事项（本机还没收到移出、中继已不认它为读者）：转只读，已有内容保留
+    if (removedFromMatter(matterId)) throw new DomainError("forbidden", "负责人已把你移出这个事项：之后的改动不会再同步给同事；已有内容留在你的电脑上，只能查看", 403, { reason: "removed_from_matter" });
+    // 第 73 批（P3-3）：律师层的话（D-310 角色只说“只看”），带负责人姓名
+    if (row.matter_role === "viewer") {
+      const owner = db2.get<{ user_id: string }>(`SELECT user_id FROM matter_members WHERE matter_id = ? AND matter_role = 'owner' AND removed_at IS NULL ORDER BY added_at LIMIT 1`, [matterId])?.user_id ?? null;
+      // 复测 P3-D：只写真实姓名（名单 / 本机记的姓名；账号代号不算），取不到就只说“负责人”；加材料、发起任务与其它修改分开说
+      const ownerName = owner ? realNameOf(owner, id.tenantId) : null;
+      const what = opts?.action === "add" ? "不能加材料或发起任务" : "不能修改这个事项";
+      throw new DomainError("forbidden", `你在这个事项里是“只看”：${what}，请找负责人${ownerName ?? ""}`, 403, { reason: "viewer_read_only", owner_name: ownerName });
+    }
+  }
+
+  /**
+   * 复测 P3-D：给律师看的真实姓名——先看同事名单（现取或缓存），再看本机记的姓名（本人用激活记录）；
+   * 本机记的是成员编号或账号代号（成员标识，例如 qa14a）时不算，返回 null（调用方只写“负责人”）。
+   */
+  function realNameOf(userId: string, tenantId: string): string | null {
+    const roster = rosterMem && rosterMem.tid === tenantId ? rosterMem.members : (readRosterCache(keyctx.keysDir, tenantId)?.members ?? []);
+    const fromRoster = roster.find((m) => m.user_id === userId)?.name;
+    if (fromRoster) return fromRoster;
+    const n = displayNameOf(userId, null);
+    if (!n) return null;
+    const slug = userId.split("_").slice(2).join("_");
+    return n === slug || n === userId ? null : n;
+  }
+
+  /** 第 73 批（P3-3）：这台电脑能不能写这个事项（与 requireMatterWriter 同一口径，不抛错）——界面据此收起写入口。 */
+  function canWriteMatter(matterId: string, id: Identity): boolean {
+    try {
+      requireMatterWriter(db, matterId, id);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** 第 73 批（P2-2）：这台电脑的主人已被负责人移出这个团队共享事项（据中继：不再是读者；见 ShareRelaySync.removedFrom）。 */
+  function removedFromMatter(matterId: string): boolean {
+    return !!deps.shareRelay?.removedFrom(matterId);
   }
 
   /** 成员链与同步引擎的依赖（第 12 批：带中继上的控制成员，锚定者与自动轮换据此判断）。 */
@@ -6034,7 +6662,8 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
    */
   function requireNoSyncAlert(matterId: string, what: string): void {
     if (!db.get(`SELECT 1 AS x FROM sync_alerts WHERE matter_id = ? AND kind = 'owner_unverifiable'`, [matterId])) return;
-    throw forbidden(`这台电脑暂时无法确认这个事项的负责人：${what}暂不可用；在用的负责人同步一次后自动恢复，若负责人都已离所请联系中软客服`);
+    // 第 73 批（D-310）：律师层的话——说清现在不能做什么、等什么会好、实在不行找谁
+    throw new DomainError("forbidden", `这台电脑暂时确认不了这个事项的负责人是谁，现在不能${what}：负责人的电脑同步一次后会自动恢复；负责人都已离所的，请联系中软客服`, 403, { reason: "owner_unverifiable" });
   }
 
   function hasActiveDevice(tenantId: string, userId: string): boolean {
@@ -6096,21 +6725,29 @@ export function createApi(deps: ApiDeps): Record<string, Handler> {
     return { ...base, status: !otherOwner ? "needs_owner" : relayController ? "needs_handoff" : "ok", relay_controller: relayController };
   }
 
+  /**
+   * 经中软同步的事项，成员调整与轮换只能由最先同步它的负责人（中继上的“控制成员”）在其电脑上做。
+   * 第 73 批（D-310）：报错原句给律师看——只说“这个事项的同步由谁管理、请他来调整”，不讲中继、控制成员、策略、密钥；
+   * 机器可判的原因在 detail.reason（relay_policy_stale / relay_controller_pending / relay_state_broken / relay_controller_not_owner /
+   * relay_controller_departed / relay_controller_other），另带 manager_user_id 与 manager_name（知道是谁时）。
+   */
   function requireRelayController(matterId: string, what: string): void {
     const ctl = deps.shareRelay?.foreignController(matterId);
     if (!ctl) return;
-    if (ctl === "~") throw forbidden(`这个事项经中软共享中继同步，而本机的律所策略已过期或尚未收到：${what}请先联网更新律所策略后再试（策略回退期间改动成员，在中继上不会生效）`);
-    if (ctl === "?") throw forbidden(`这个事项经中软共享中继同步，正在向中继确认最先同步它的负责人：${what}请稍后再试（可先点“立即同步”）`);
+    const deny = (msg: string, reason: string, extra: Record<string, unknown> = {}) => new DomainError("forbidden", msg, 403, { reason, ...extra });
+    if (ctl === "~") throw deny(`这个事项的同事之间同步暂停了（所内的规则需要更新）：请先联网同步一次再${what}；暂停期间在这里调整同事不会生效`, "relay_policy_stale");
+    if (ctl === "?") throw deny(`正在确认这个事项的同事名单由谁管理：请稍后再${what}（可先点“立即同步”）`, "relay_controller_pending");
     const row = db.get<{ matter_role: string; removed_at: string | null }>(`SELECT matter_role, removed_at FROM matter_members WHERE matter_id = ? AND user_id = ?`, [matterId, ctl]);
-    const name = db.get<{ display_name: string }>(`SELECT display_name FROM users WHERE user_id = ?`, [ctl])?.display_name ?? ctl;
+    const name = displayNameOf(ctl) ?? ctl;
+    const who = { controller_user_id: ctl, controller_name: name };
     // 第三轮复核 S11A-31：控制成员已不是在册负责人（移交、被移出）或根本不是本事项成员（被抢先登记）时，如实说明须找中软客服
-    if (!row) throw forbidden(`这个事项在中软共享中继上的状态异常（登记者不是本事项成员）：${what}暂时不能经中继同步，请联系中软客服重置该事项`);
-    if (row.removed_at || row.matter_role !== "owner") throw forbidden(`这个事项经中软共享中继同步，中继上的控制成员（${name}）已不是负责人：${what}暂时不能经中继同步，请联系中软客服办理交接`);
+    if (!row) throw deny(`这个事项的同事名单状态异常，现在不能${what}：请联系中软客服处理这个事项`, "relay_state_broken");
+    if (row.removed_at || row.matter_role !== "owner") throw deny(`这个事项的同事名单由${name}管理，而他已不是负责人，现在不能${what}：请联系中软客服办理交接`, "relay_controller_not_owner", who);
     // B-10：控制成员没交接就离所了（他的电脑已全部停用）——别让负责人去找一个找不到的人
     const tenantId = db.get<{ tenant_id: string }>(`SELECT tenant_id FROM devices WHERE device_id = ?`, [keyctx.device.deviceId])?.tenant_id ?? "";
     const ctlDevices = db.all<{ status: string }>(`SELECT status FROM devices WHERE tenant_id = ? AND member_id = ? AND role <> 'node'`, [tenantId, ctl]);
-    if (ctlDevices.length > 0 && ctlDevices.every((d) => d.status !== "active")) throw forbidden(`这个事项经中软共享中继同步，中继上的控制成员（${name}）的电脑已全部停用（多为离所时没有交接）：${what}暂时不能经中继同步，请联系中软客服办理交接`);
-    throw forbidden(`这个事项经中软共享中继同步：${what}须由中继上的控制成员（${name}）在其电脑上操作，或请对方先把控制成员移交给你`);
+    if (ctlDevices.length > 0 && ctlDevices.every((d) => d.status !== "active")) throw deny(`这个事项的同事名单由${name}管理，而他的电脑都已停用（多为离所时没有交接），现在不能${what}：请联系中软客服办理交接`, "relay_controller_departed", who);
+    throw deny(what === "加人" || what === "移出同事" ? `这个事项的同事名单由${name}管理：请他来加人或移出` : `这个事项的同事名单由${name}管理：请他在自己的电脑上${what}`, "relay_controller_other", who);
   }
 
   /**

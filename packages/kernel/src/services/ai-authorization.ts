@@ -17,6 +17,84 @@ export const AI_SUBPROCESSORS = {
   ],
 } as const;
 
+/**
+ * 第 73 批（V47，P2-3）：团队共享事项的次处理者清单——中软除了转发 AI 请求，还经同事之间同步保存加密副本。
+ * 与只有我的事项分开记版本：按只有我的清单记录的授权，转成团队共享后须按这一份重新确认（授权覆盖范围变了）。
+ * 角色原话与开通“同事之间同步”的确认框一致（服务方打不开；本机删除事项不会删除服务方那里的加密副本）。
+ */
+export const AI_SUBPROCESSORS_TEAM = {
+  version: "sp-2026-11-team",
+  items: [
+    { name: "中软国际", role: "云端转发 AI 请求，不保存内容；同事之间同步时保存加密副本，打不开内容；本机删除事项不会删除中软上的加密副本" },
+    { name: "月之暗面", role: "Kimi 模型推理" },
+  ],
+} as const;
+
+export type CollabScopeLike = string | null | undefined;
+
+/** 事项范围对应的次处理者清单（团队共享 / 只有我）。 */
+export function subprocessorsFor(scope: CollabScopeLike): { version: string; items: readonly { name: string; role: string }[] } {
+  return scope === "team" ? AI_SUBPROCESSORS_TEAM : AI_SUBPROCESSORS;
+}
+
+/** 事项范围对应的“当前”次处理者清单版本（授权记录按它判断是否须重新确认）。 */
+export function noticeVersionFor(scope: CollabScopeLike): string {
+  return subprocessorsFor(scope).version;
+}
+
+/** 数据去向的一条（开始前确认的授权卡、授权记录、估价的完整说明共用）。 */
+export interface DataFlowEntry {
+  key: "local" | "colleagues" | "zr_relay" | "ai_forward";
+  label: string;
+  text: string;
+  /**
+   * 第 73 批（产品评分 G5 第 3 条）：这条去向什么时候发生——
+   * on_team_share = 律所开通同事之间同步、律师选团队共享时就已发生（同事电脑、中软加密副本），不受单个事项的 AI 授权约束；
+   * on_ai_use = 用 AI 时才发生（受客户授权约束）；always = 存放位置的说明（案卷只存这台电脑），无论用不用 AI。
+   */
+  when: "on_ai_use" | "on_team_share" | "always";
+  /** 第 73 批：同事电脑一条带人数（不含本人的在册事项成员；不知道为 null）；其余条目没有。 */
+  count?: number | null;
+}
+
+/**
+ * 事项的数据去向（P2-3）：只有我的事项——案卷只存这台电脑；团队共享事项——同事电脑上也有（经加密同步到事项成员的电脑）、
+ * 中软保存加密副本（打不开；本机删除事项不会删除中软上的加密副本）。colleagues = 除本人外的在册事项成员数（不知道为 null）。纯函数。
+ */
+export function dataFlowsFor(scope: CollabScopeLike, colleagues: number | null = null, ai: { endpoint?: string | null; level?: string | null } | null = null): DataFlowEntry[] {
+  const base: DataFlowEntry[] =
+    scope !== "team"
+      ? [{ key: "local", label: "案卷", text: "案卷只存这台电脑", when: "always" }]
+      : [
+          // 还没加同事（0 人）时不写人数（11-27 实拍：“本所同事 0 人”读着像没有去向）
+          {
+            key: "colleagues",
+            label: "同事电脑",
+            count: colleagues,
+            text: colleagues === 0 ? "经加密同步到之后加进来的同事电脑；他们电脑上也会有材料与成果" : `经加密同步到事项成员的电脑${colleagues !== null ? `（本所同事 ${colleagues} 人）` : ""}；他们电脑上也有材料与成果`,
+            when: "on_team_share",
+          },
+          { key: "zr_relay", label: "中软", text: "保存加密副本，打不开内容；本机删除事项不会删除中软上的加密副本", when: "on_team_share" },
+        ];
+  const f = aiForwardOf(ai);
+  return f ? [...base, f] : base;
+}
+
+/**
+ * 用 AI 时的去向（on_ai_use）：按模型端点说经谁到哪里；不使用模型、或客户要求不上云而不是律所私有端点（用不了 AI）时没有这一条。纯函数。
+ */
+function aiForwardOf(ai: { endpoint?: string | null; level?: string | null } | null): DataFlowEntry | null {
+  if (!ai || !ai.endpoint || ai.endpoint === "none") return null;
+  if (ai.level === "L3b" && ai.endpoint !== "private") return null;
+  const text =
+    ai.endpoint === "private"
+      ? "用 AI 时：任务用到的内容发给律所自己的 AI（不经中软）"
+      : ai.endpoint === "byok"
+        ? "用 AI 时：任务用到的内容先把姓名、证件号、电话等换成代号，直接发给律所自己的 Kimi 账号（不经中软）"
+        : "用 AI 时：任务用到的内容先把姓名、证件号、电话等换成代号，经中软转发给 Kimi 模型（月之暗面）；中软不保存内容";
+  return { key: "ai_forward", label: "AI", text, when: "on_ai_use" };
+}
+
 /** 律师本人“首次使用 AI 数据去向告知”的版本（user_ai_notice）。 */
 export const AI_NOTICE_VERSION = "notice-2026-11";
 
@@ -45,6 +123,9 @@ export interface AuthorizationRecordEntry {
   basis_ref: string;
   basis_notice_version: string;
   basis: Record<string, string> | null;
+  /** 第 73 批：记录时的事项范围与数据去向（此前的记录没有，为 null）。 */
+  scope: "personal" | "team" | null;
+  data_flows: DataFlowEntry[] | null;
   recorded_by_id: string;
   recorded_at: string;
 }
@@ -56,7 +137,7 @@ export function authorizationHistory(db: { all<T>(sql: string, params?: unknown[
     `SELECT actor_id, detail_hash, created_at FROM audit_events WHERE action = ? AND object_kind = 'matter' AND object_id = ? ORDER BY audit_event_id DESC`,
     [AUTHORIZATION_AUDIT_ACTION, matterId],
   )) {
-    let d: { basis_source?: unknown; basis_ref?: unknown; basis_notice_version?: unknown; basis?: unknown } | null = null;
+    let d: { basis_source?: unknown; basis_ref?: unknown; basis_notice_version?: unknown; basis?: unknown; scope?: unknown; data_flows?: unknown } | null = null;
     try {
       d = JSON.parse(String(r.detail_hash ?? ""));
     } catch {
@@ -68,6 +149,8 @@ export function authorizationHistory(db: { all<T>(sql: string, params?: unknown[
       basis_ref: d.basis_ref,
       basis_notice_version: String(d.basis_notice_version ?? ""),
       basis: d.basis && typeof d.basis === "object" ? (d.basis as Record<string, string>) : null,
+      scope: d.scope === "team" || d.scope === "personal" ? d.scope : null,
+      data_flows: Array.isArray(d.data_flows) ? (d.data_flows as DataFlowEntry[]) : null,
       recorded_by_id: r.actor_id,
       recorded_at: r.created_at,
     });
@@ -75,10 +158,10 @@ export function authorizationHistory(db: { all<T>(sql: string, params?: unknown[
   return out;
 }
 
-/** 事项的授权记录是否按旧的次处理者清单（版本非空且不等于当前版本）。版本为空（此前的事项、未记来源）不算。 */
-export function basisNoticeStale(m: { basis_notice_version?: string | null }): boolean {
+/** 事项的授权记录是否按旧的次处理者清单（版本非空且不等于这个事项范围的当前版本）。版本为空（此前的事项、未记来源）不算。 */
+export function basisNoticeStale(m: { basis_notice_version?: string | null; collab_scope?: CollabScopeLike }): boolean {
   const v = m.basis_notice_version;
-  return typeof v === "string" && v !== "" && v !== AI_SUBPROCESSORS.version;
+  return typeof v === "string" && v !== "" && v !== noticeVersionFor(m.collab_scope);
 }
 
 /** 出处文字规整：去首尾空白，空串为 null；非字符串、超长返回错误说明（调用方抛 validation）。 */

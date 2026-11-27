@@ -10,7 +10,9 @@
  *    律师设了常用条款时预选并预填（一键确认）；次处理者清单变了再请律师确认一次；敏感事项另勾敏感个人信息的单独同意。
  * 内核仍分别记录四项依据（第 02 篇 §8.1，闸门、宿主、网关口径不变）。
  */
-import type { AiSubprocessors, MatterBasis } from "../api.ts";
+import type { AiSubprocessors, DataFlowEntry, MatterBasis } from "../api.ts";
+import { aiRoleOf, authzFlowRows } from "../lib/team-matters.ts";
+import { useRelayState } from "./TeamMatter.tsx";
 import { BasisEditor } from "./MatterHeader.tsx";
 import "../styles-authz.css";
 import "../styles-motion.css";
@@ -38,7 +40,16 @@ export function AuthorizationRecord({
   endpoint,
   basis,
   needsRef = false,
+  dataFlows = null,
+  reconfirmWhy = "list",
+  team = false,
 }: {
+  /** 事项是团队共享（collab_scope = team）：内核没给数据去向时也固定列出“同事电脑”；所内还没开通同事之间同步时写成“开通后会同步到…”。 */
+  team?: boolean;
+  /** 第 73 批（验收 P2-3）：按事项范围的数据去向（只有我 = 案卷只存这台电脑；和同事一起办 = 同事电脑、中软加密副本）。 */
+  dataFlows?: readonly DataFlowEntry[] | null;
+  /** 要重新确认的原因：次处理者清单更新 / 事项改为和同事一起办（原授权没覆盖同事之间同步）。 */
+  reconfirmWhy?: "scope" | "list";
   /** 早期记录缺少出处（D-225）：重新确认卡说明“请补记一次”。 */
   needsRef?: boolean;
   matterTitle: string;
@@ -57,18 +68,32 @@ export function AuthorizationRecord({
   basis: MatterBasis | undefined;
 }) {
   const list = (processors ?? FALLBACK_PROCESSORS).items;
+  const relay = useRelayState(team);
+  const flows = authzFlowRows(dataFlows, { team, relay: team ? relay.ready : null });
+  // 产品评分 G5-3：分两段——“授权要覆盖（AI 使用时）”与“选团队共享时已发生”；同步与中软加密副本不放进 AI 次处理者里冒充
+  const teamRows = flows.rows.filter((f) => f.when === "on_team_share");
+  const aiRows = flows.rows.filter((f) => f.when !== "on_team_share");
+  const split = teamRows.length > 0;
+  // 内核 D-312 新增 AI 转发一条（按端点写经谁到哪里、换成代号）：有它时次处理者只列名字、不再写“系统另外做到”，免得同一件事说两遍
+  const aiForward = aiRows.some((f) => f.key === "ai_forward");
+  // 中软那条去向若已写在次处理者的说明里、又没有单独一段时，不再单列一行（实拍：同一句说两遍）
+  const flowRows = split ? aiRows : flows.rows.filter((f) => !(f.key === "zr_relay" && list.some((p) => /加密副本/.test(p.role))));
+  // 第二段的标题：所内已开通同步时是“已发生”，没开通时如实说“开通后发生”
+  const teamHead = team && relay.ready === false ? "选团队共享后、所内开通同事之间同步时发生" : "选团队共享时已发生（律所已开通同事之间同步）";
   const pick = (k: BasisKind) => onChange({ ...value, kind: k, ref: value.kind === k ? value.ref : k === "engagement_terms" && value.kind === null ? value.ref : "" });
   return (
     <section className="authz-record" aria-labelledby="authz-record-h">
       <div className="authz-record-head">
-        <h3 id="authz-record-h">{needsRef ? "请补记本案授权的出处" : reconfirm ? "AI 次处理者有变化，请重新确认本案授权" : "记录本案的客户授权"}</h3>
+        <h3 id="authz-record-h">{needsRef ? "请补记本案授权的出处" : reconfirm ? (reconfirmWhy === "scope" ? "这个事项改为团队共享了，请重新确认本案授权" : "AI 次处理者有变化，请重新确认本案授权") : "记录本案的客户授权"}</h3>
+        {/* 第二轮复评 T12：重新确认的说明压到两行，不再贴一遍标准段落（第一次记录时才说“这是什么记录”） */}
         <p>
           {needsRef
             ? "这是早期记录，缺少出处，请补记一次。"
             : reconfirm
-              ? "原来记录的授权依据告知的是旧的次处理者清单。核实客户的授权覆盖下面的新清单后，重新确认一次。"
-              : "这是本事项第一次用 AI。"}
-          请记下客户授权的依据——它是你核实过的事实记录，不代替客户本人的授权；记录随事项保存、写进事项日志。
+              ? reconfirmWhy === "scope"
+                ? "原来的授权只覆盖这台电脑，没覆盖同事之间同步；核实客户授权覆盖下面的范围后重新记录，记录前不会发给 AI。"
+                : "原来记录的授权依据告知的是旧的次处理者清单；核实客户授权覆盖下面的新清单后重新确认，确认前不会发给 AI。"
+              : "这是本事项第一次用 AI。请记下客户授权的依据——它是你核实过的事实记录，不代替客户本人的授权；记录随事项保存、写进事项日志。"}
         </p>
       </div>
       {detail ? (
@@ -121,14 +146,41 @@ export function AuthorizationRecord({
               </dd>
             </div>
             <div>
-              <dt>授权要覆盖</dt>
-              <dd>使用 AI 辅助处理本案材料；次处理者：{list.map((p) => `${p.name}（${p.role}）`).join("、")}</dd>
+              <dt>
+                授权要覆盖
+                {(split || aiForward) && <small className="authz-dt-when">（AI 使用时）</small>}
+              </dt>
+              <dd>使用 AI 辅助处理本案材料；次处理者：{list.map((p) => (aiForward ? p.name : `${p.name}（${aiRoleOf(p.role, split)}）`)).join("、")}</dd>
             </div>
-            <div>
-              <dt>系统另外做到</dt>
-              <dd>发出前把姓名、证件号、电话等换成代号；案卷只存这台电脑</dd>
-            </div>
+            {!aiForward && (
+              <div>
+                <dt>系统另外做到</dt>
+                <dd>发出前把姓名、证件号、电话等换成代号{flows.local ? `；${flows.local}` : ""}</dd>
+              </div>
+            )}
+            {/* 第 73 批（验收 P2-3）：和同事一起办的事项如实列出数据去向（同事电脑、中软加密副本），不再写死“案卷只存这台电脑” */}
+            {flowRows.map((f) => (
+              <div key={f.key}>
+                <dt>{f.label}</dt>
+                <dd>{f.text}</dd>
+              </div>
+            ))}
           </dl>
+          {split && (
+            <div className="authz-scope authz-scope-team" role="group" aria-label={teamHead}>
+              <p className="authz-scope-cap">{teamHead}</p>
+              <dl className="authz-scope-list">
+                {teamRows.map((f) => (
+                  <div key={f.key}>
+                    <dt>{f.label}</dt>
+                    <dd>{f.text}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          )}
+          {/* D-312：总是如此的（只有我的事项：案卷只存这台电脑）放卡片底部一行 */}
+          {flows.always.length > 0 && <p className="authz-always">{flows.always.join("；")}。</p>}
           {sensitive && (
             <label className="authz-sensitive">
               <input type="checkbox" checked={value.sensitive} onChange={(e) => onChange({ ...value, sensitive: e.target.checked })} />

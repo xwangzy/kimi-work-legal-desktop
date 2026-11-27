@@ -1,8 +1,9 @@
 /**
  * 事项页（第 03 篇 §4.4 事项头常显；材料、任务、看板、当事人词典、数据去向）。
+ * 第 73 批（D-308、D-310）：团队共享事项——事项头“团队共享 · n 人”胶囊、“⋯ → 事项成员”页；个人事项的负责人在团队空间里有“⋯ → 和同事一起办…”。
  */
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import { api, type AiAuthorization, type EgressRecord, type Matter, type MaterialFile, type MaterialImportResult, type MaterialTriage, type MaterialUsage, type MatterBasis, type RunPolicyView } from "../api.ts";
+import { api, matterMembers, teamMatters, type MatterMembersView, type AiAuthorization, type EgressRecord, type Matter, type MaterialFile, type MaterialImportResult, type MaterialTriage, type MaterialUsage, type MatterBasis, type RunPolicyView } from "../api.ts";
 import { triageSuggestion, triageText } from "../lib/material-triage.ts";
 import { nav } from "../App.tsx";
 import { Composer, type ComposerValue } from "../components/Composer.tsx";
@@ -37,10 +38,14 @@ import { filterDocsByName, importResultText, MATERIAL_ORIGIN_LABELS, materialOri
 import { MaterialPicker } from "../components/MaterialPicker.tsx";
 import { ConfirmButton } from "../components/ConfirmButton.tsx";
 import { SafePreview } from "../components/SafePreview.tsx";
+import { AddColleaguesDialog, MatterMembersPanel, useRoster, useTeamKind } from "../components/TeamMatter.tsx";
+import { authzScopeReady, canOfferShare, isTeamShared, needsShareRefresh, reconfirmReason, REMOVED_ME_TEXT, removeLocalCopyLines, sharedMaterialNote, teamFaultText } from "../lib/team-matters.ts";
 import "../styles-materials.css";
 import "../styles-matter.css";
 
-type Tab = "materials" | "facts" | "runs" | "board" | "deliverables" | "parties" | "egress" | "lifecycle";
+type Tab = "materials" | "facts" | "runs" | "board" | "deliverables" | "parties" | "egress" | "lifecycle" | "members";
+/** “⋯”里的几页（第 73 批：团队共享事项多“事项成员”）。 */
+const MORE_TAB_LABEL: Partial<Record<Tab, string>> = { parties: "当事人名单", egress: "数据去向记录", lifecycle: "结案与删除" };
 
 export function MatterPage({ matterId }: { matterId: string }) {
   const [matter, setMatter] = useState<Matter | null>(null);
@@ -108,6 +113,18 @@ export function MatterPage({ matterId }: { matterId: string }) {
   const [usageOpen, setUsageOpen] = useState<string | null>(null);
   const [preview, setPreview] = useState<{ filename: string; text: string | null; error?: string } | null>(null);
   const [showOld, setShowOld] = useState(false);
+  // 第 73 批：事项成员（团队共享事项才取）；个人事项“和同事一起办…”弹窗；改为一起办之后的一句结果
+  // 类型不知道（刚切到的团队档案）时按名单推断：“和同事一起办…”照常给，由内核判断并如实显示原因
+  const { ws, kind: teamKind } = useTeamKind();
+  const [members, setMembers] = useState<MatterMembersView | null>(null);
+  const [membersErr, setMembersErr] = useState<string | null>(null);
+  const [membersTick, setMembersTick] = useState(0);
+  const [sharing, setSharing] = useState(false);
+  // 第二轮复评 T13（42）：被负责人移出后“从我的电脑移除…”（内核 matters.remove_local_copy）
+  const [removingLocal, setRemovingLocal] = useState(false);
+  // 第 73 批（11c T13）：内核删除后把事项名称换成占位——删除当时记下名称，回执标题用它（离开再回来就只写“已删除的事项”）
+  const lastTitle = useRef<{ id: string; title: string } | null>(null);
+  const [shareMsg, setShareMsg] = useState<{ text: string; tone: "ok" | "warn" } | null>(null);
 
   const reload = useCallback(() => {
     api
@@ -144,6 +161,45 @@ export function MatterPage({ matterId }: { matterId: string }) {
       .catch(() => setReview(new Map()));
   }, [matterId]);
   useEffect(reload, [reload]);
+  const teamShared = isTeamShared(matter, ws.kind);
+  // “和同事一起办…”：能给时才取一次同事名单（60 秒内共用）；云端还没有同事名单能力（not_supported，如线上 1.6 / 1.7）时不出现。名单没回来前照常给，由内核判断
+  const offerBase = !!matter && !teamShared && canOfferShare(teamKind, matter);
+  const offerRoster = useRoster(offerBase);
+  const offerShare = offerBase && canOfferShare(teamKind, matter!, offerRoster);
+  useEffect(() => {
+    if (!teamShared) {
+      setMembers(null);
+      return;
+    }
+    let live = true;
+    setMembersErr(null);
+    matterMembers
+      .list(matterId)
+      .then((r) => live && setMembers(r))
+      .catch((e) => live && setMembersErr((e as Error).message));
+    return () => {
+      live = false;
+    };
+  }, [matterId, teamShared, membersTick]);
+  // 10b 复测 P3-A：事项页得知负责人已把我移出（matters.get 或成员页向同步服务核对）时，通知侧栏 / 事项列表重取，
+  // “团队共享”记号立刻换成“已移出”（原来要整页重开）；同一事项只通知一次
+  const removedSeen = !!matter?.removed_me || members?.removed_me === true || members?.sync === "removed";
+  const removedNotified = useRef<string | null>(null);
+  useEffect(() => {
+    if (!removedSeen || removedNotified.current === matterId) return;
+    removedNotified.current = matterId;
+    notifyDataChanged();
+  }, [removedSeen, matterId]);
+  // 第 73 批（实拍补）：事项成员页上方是“所内还没开通 / 不知道”时问一次内核（带 matter_id，每次打开这个事项至多一次，不轮询；内核另有 60 秒节流）；
+  // 规则刚放开就把那句换掉
+  const shareAsked = useRef<string | null>(null);
+  useEffect(() => {
+    if (tab !== "members" || !members || members.matter_id !== matterId || shareAsked.current === matterId || !needsShareRefresh(members.sync)) return;
+    shareAsked.current = matterId;
+    void teamMatters.refreshShareState(matterId).then((r) => {
+      if (r && r.sync !== members.sync) setMembers((v) => (v && v.matter_id === matterId ? { ...v, sync: r.sync } : v));
+    });
+  }, [tab, matterId, members]);
 
   const patch = async (p: Record<string, unknown>, note: string) => {
     try {
@@ -296,16 +352,25 @@ export function MatterPage({ matterId }: { matterId: string }) {
   }
   // 已删除的事项：只显示删除回执（名称已替换为占位，内容已删除）
   if (matter.lifecycle === "purged") {
+    const known = lastTitle.current?.id === matter.matter_id ? lastTitle.current.title : null;
     return (
       <main className="main">
         <div className="main-wide">
-          <h1 className="page-title">{matter.title}</h1>
-          <MatterLifecyclePanel matter={matter} onChanged={reload} />
+          <h1 className="page-title">删除回执</h1>
+          <MatterLifecyclePanel matter={matter} onChanged={reload} deletedTitle={known} />
         </div>
       </main>
     );
   }
+  lastTitle.current = { id: matter.matter_id, title: matter.title };
   const closed = matter.lifecycle === "closed";
+  // 第 73 批（端到端验收 P3-3）：“只看”的事项成员——加材料、发起任务、关联案卷文件夹、改材料用途与授权一律收起，并说明一句（内核 matters.get.can_write；旧内核按 my_role）
+  // 第 73 批（验收 P2-2）：负责人已把我移出这个事项（内核 removed_me / 成员视图 sync = removed）——一条说明、不再写“团队共享 · n 人”、写入口收起
+  const removedMe = !!matter.removed_me || members?.removed_me === true || members?.sync === "removed";
+  // 11c T6（34）：“结案与删除”只给负责人（只有负责人能结案、删除；被移出的另有“从我的电脑移除…”，仍在事项里的同事没有删除本机副本的入口）
+  const canLifecycle = !removedMe && (matter.my_role ?? "owner") === "owner";
+  const viewOnly = !removedMe && (matter.can_write === false || (matter.can_write === undefined && matter.my_role === "viewer"));
+  const locked = closed || viewOnly || removedMe;
   const basis: MatterBasis = matter.basis ?? {
     engagement: matter.consent_status === "agreed" || matter.consent_status === "not_required" ? "confirmed" : "pending",
     personal_info: matter.consent_status === "agreed" || matter.consent_status === "not_required" ? "confirmed" : "pending",
@@ -319,7 +384,7 @@ export function MatterPage({ matterId }: { matterId: string }) {
         <div className="page-head">
           <h1 className="page-title">{matter.title}</h1>
           <div className="page-head-actions">
-            {!closed && (
+            {!locked && (
               <button className="btn-ghost" aria-expanded={composerOpen || !!value.goal.trim()} onClick={() => setComposerOpen((v) => !v || !!value.goal.trim())}>
                 发起任务
               </button>
@@ -361,7 +426,11 @@ export function MatterPage({ matterId }: { matterId: string }) {
           matter={matter}
           policy={policy}
           onParties={() => setTab("parties")}
-          {...(closed
+          team={teamShared && !removedMe ? { view: members, error: membersErr } : null}
+          removed={removedMe}
+          viewer={viewOnly}
+          onMembers={() => setTab("members")}
+          {...(locked
             ? {}
             : {
                 onEditBasis: () => setBasisOpen(true),
@@ -383,7 +452,20 @@ export function MatterPage({ matterId }: { matterId: string }) {
             <button className="btn-link" onClick={() => setTab("lifecycle")}>结案与删除</button>
           </div>
         )}
-        {!closed && (composerOpen || !!value.goal.trim()) && <div className="matter-composer has-text">
+        {removedMe && (
+          <div className="banner banner-gray banner-inline removed-me-note" role="note">
+            <span>{REMOVED_ME_TEXT}</span>
+            <button type="button" className="btn-link" onClick={() => setRemovingLocal(true)}>
+              从我的电脑移除…
+            </button>
+          </div>
+        )}
+        {viewOnly && !closed && (
+          <div className="banner banner-gray banner-inline view-only-note" role="note">
+            你在这个事项里是“只看”：可以看材料、AI 记录和成果，不能加材料、发起任务或改动。要改动，请找负责人把你改为“一起办”。
+          </div>
+        )}
+        {!locked && (composerOpen || !!value.goal.trim()) && <div className="matter-composer has-text">
           <Composer
             autoFocus
             matterId={matterId}
@@ -419,25 +501,39 @@ export function MatterPage({ matterId }: { matterId: string }) {
               // “任务”改名“AI 记录”（C1 §3.2）：它是 AI 运行流水，待办在概览里
               ["runs", `AI 记录（${runs.length}）`],
               ["deliverables", "成果"],
+              // 第 73 批（设计评分第一轮 T5 / 跨页 10）：团队共享事项“事项成员”常驻为一个标签（不再进去后才出现、也不在“⋯”里重复）
+              ...(teamShared && !removedMe ? ([["members", "事项成员"]] as [Tab, string][]) : []),
             ] as [Tab, string][]
           ).map(([k, l]) => (
             <button key={k} role="tab" aria-selected={tab === k} className={`tab${tab === k ? " active" : ""}`} onClick={() => setTab(k)}>{l}</button>
           ))}
-          {(tab === "parties" || tab === "egress" || tab === "lifecycle") && (
-            <button role="tab" aria-selected className="tab active">{tab === "parties" ? "当事人名单" : tab === "egress" ? "数据去向记录" : "结案与删除"}</button>
+          {MORE_TAB_LABEL[tab] && (
+            <button role="tab" aria-selected className="tab active">{MORE_TAB_LABEL[tab]}</button>
           )}
           <span className="spacer" />
           <span className="tab-more-wrap" ref={moreRef}>
-            <button className="tab tab-more" aria-haspopup="menu" aria-expanded={moreOpen} aria-label="更多：当事人名单、数据去向记录、结案与删除" onClick={() => setMoreOpen((v) => !v)}>
+            <button className="tab tab-more" aria-haspopup="menu" aria-expanded={moreOpen} aria-label={`更多：${[offerShare ? "改为团队共享" : "", removedMe ? "从我的电脑移除" : "", "当事人名单", "数据去向记录", canLifecycle ? "结案与删除" : ""].filter(Boolean).join("、")}`} onClick={() => setMoreOpen((v) => !v)}>
               ⋯
             </button>
             {moreOpen && (
               <div className="popover tab-more-menu" role="menu">
+                {/* 第 73 批：个人事项的负责人（团队空间、进行中）有“和同事一起办…”；团队共享事项的“事项成员”是常驻标签 */}
+                {offerShare && (
+                  <button role="menuitem" className="menu-item" onClick={() => { setSharing(true); setMoreOpen(false); }}>
+                    <span className="menu-label">改为团队共享…</span>
+                  </button>
+                )}
+                {/* 被移出的成员：只删这台电脑上的副本（负责人与同事那边不受影响）；“结案与删除”是负责人的事，不给 */}
+                {removedMe && (
+                  <button role="menuitem" className="menu-item" onClick={() => { setRemovingLocal(true); setMoreOpen(false); }}>
+                    <span className="menu-label">从我的电脑移除…</span>
+                  </button>
+                )}
                 {(
                   [
                     ["parties", "当事人名单"],
                     ["egress", "数据去向记录"],
-                    ["lifecycle", "结案与删除"],
+                    ...(canLifecycle ? [["lifecycle", "结案与删除"]] : []),
                   ] as [Tab, string][]
                 ).map(([k, l]) => (
                   <button key={k} role="menuitem" className="menu-item" onClick={() => { setTab(k); setMoreOpen(false); }}>
@@ -459,13 +555,14 @@ export function MatterPage({ matterId }: { matterId: string }) {
                 </div>
               )}
               {/* 案卷文件夹（第 48 批）：关联本机的一个文件夹，手动同步新增、改过的文件；位置只在这台电脑上 */}
-              {matView === "list" && <MaterialFolderBar matterId={matter.matter_id} folder={matter.folder ?? null} readOnly={closed} disabled={busy} onChanged={reload} />}
+              {matView === "list" && <MaterialFolderBar matterId={matter.matter_id} folder={matter.folder ?? null} readOnly={locked} disabled={busy} onChanged={reload} sharedNote={sharedMaterialNote(teamShared)} />}
             </div>
-            {matView === "table" && docs.length > 0 && <TableReview matterId={matter.matter_id} docs={docs} readOnly={closed} initialTable={tableFocus} onFill={(t) => void fillTable(t)} onAsk={(t, q) => void askTable(t, q)} onExported={() => void reload()} />}
+            {matView === "table" && docs.length > 0 && <TableReview matterId={matter.matter_id} docs={docs} readOnly={locked} initialTable={tableFocus} onFill={(t) => void fillTable(t)} onAsk={(t, q) => void askTable(t, q)} onExported={() => void reload()} />}
             {/* 第 66 批 D1：添加材料与首页、开始面板、追问同一个组件（拖放、选择文件、逐份结果；同内容已在本事项的不重复保存） */}
-            {matView === "list" && !closed && (
+            {matView === "list" && !locked && (
               <MaterialPicker
                 matterTitle={matter.title}
+                sharedNote={sharedMaterialNote(teamShared)}
                 documents={docs}
                 showList={false}
                 disabled={busy}
@@ -477,6 +574,8 @@ export function MatterPage({ matterId }: { matterId: string }) {
                 }}
               />
             )}
+            {/* 第 73 批收尾：只读（被移出 / 只看 / 结案）又没有材料时如实说一句，不留白（原来工具栏、添加区都收起，整页空着） */}
+            {locked && docs.length === 0 && <p className="muted mat-empty-locked">这台电脑上没有这个事项的材料。</p>}
             {matView === "list" && docs.length > 0 && (
               // 材料内搜索（第 48 批）：输入即按文件名筛选下面的表；回车或停顿片刻再到材料的文字里找
               <MaterialSearch matterId={matter.matter_id}>
@@ -487,6 +586,8 @@ export function MatterPage({ matterId }: { matterId: string }) {
                     <p className="ms-empty">没有文件名含“{q.trim()}”的材料</p>
                   ) : (
               // 固定列宽（第 27 批，评审 U3-05）：1280 宽下“我方 / 对方 / 参考”曾逐字竖排折行；只有文件名列可以两行
+              // 第 73 批（11c T13）：外面包一层容器，窄宽度（960 窗口）下按容器宽度收起次要列、文件名单行省略（styles-matter.css @container mat）
+              <div className="mat-table-wrap">
               <table className="data mat-table">
                 <colgroup><col /><col className="c-role" /><col className="c-triage" /><col className="c-read" /><col className="c-review" /><col className="c-time" /></colgroup>
                 <thead><tr><th>文件</th><th>用途</th><th>初判</th><th>读取</th><th>审查意见</th><th>时间</th></tr></thead>
@@ -516,7 +617,7 @@ export function MatterPage({ matterId }: { matterId: string }) {
                             ) : (
                               <span className="mat-unused">{(usage.get(d.document_version_id)?.readable_by_unrestricted ?? 0) > 0 ? `${usage.get(d.document_version_id)!.readable_by_unrestricted} 次任务可读全部材料（含它）` : "还没有任务用过"}</span>
                             )}
-                            {!closed && !matter.is_sample && (
+                            {!locked && !matter.is_sample && (
                               <ConfirmButton
                                 label="移除"
                                 className="btn-link mat-remove"
@@ -537,7 +638,7 @@ export function MatterPage({ matterId }: { matterId: string }) {
                         <RolePills
                           name={d.filename}
                           value={d.role}
-                          disabled={closed}
+                          disabled={locked}
                           onChange={(v) => {
                             void api
                               .setMaterialRole(d.document_version_id, v)
@@ -550,7 +651,7 @@ export function MatterPage({ matterId }: { matterId: string }) {
                         {triage.get(d.document_version_id) ? (
                           <>
                             {triageText(triage.get(d.document_version_id)!)}
-                            {!closed && !matter.is_sample && triageSuggestion(triage.get(d.document_version_id)!, matter) && (
+                            {!locked && !matter.is_sample && triageSuggestion(triage.get(d.document_version_id)!, matter) && (
                               <button className="btn-link mat-suggest" onClick={() => nav(`/start/${triageSuggestion(triage.get(d.document_version_id)!, matter)!.id}/${matterId}`)}>
                                 {triageSuggestion(triage.get(d.document_version_id)!, matter)!.title}
                               </button>
@@ -613,6 +714,7 @@ export function MatterPage({ matterId }: { matterId: string }) {
                   })()}
                 </tbody>
               </table>
+              </div>
                   );
                 }}
               </MaterialSearch>
@@ -650,6 +752,7 @@ export function MatterPage({ matterId }: { matterId: string }) {
             matter={matter}
             runs={runs}
             docs={docs}
+            readOnly={locked}
             onChanged={reload}
             onGo={(t) => {
               // 待核清单的去处（v9.4 第 21 批）：事实标签、材料的表格审阅、审查工作台
@@ -663,10 +766,43 @@ export function MatterPage({ matterId }: { matterId: string }) {
           />
         )}
         {tab === "deliverables" && <MatterDeliverables matterId={matterId} />}
-        {tab === "facts" && <FactsPanel matterId={matterId} docs={docs} readOnly={closed} />}
-        {tab === "parties" && <PartiesPanel matterId={matterId} onChanged={reload} readOnly={closed} />}
+        {tab === "facts" && <FactsPanel matterId={matterId} docs={docs} readOnly={locked} />}
+        {tab === "parties" && <PartiesPanel matterId={matterId} onChanged={reload} readOnly={locked} />}
         {tab === "egress" && <MatterEgress matterId={matterId} />}
         {tab === "lifecycle" && <MatterLifecyclePanel matter={matter} onChanged={reload} />}
+        {tab === "members" && (teamShared ? (
+          <MatterMembersPanel key={shareMsg?.text ?? "members"} matter={matter} view={members} error={membersErr} onReload={() => setMembersTick((t) => t + 1)} canEnable={ws.features.teamAdmin} initialMsg={shareMsg} />
+        ) : (
+          <p className="muted">这个事项只有你：要和同事共享，点右上角“⋯ → 改为团队共享…”。</p>
+        ))}
+        {removingLocal && (
+          <RemoveLocalCopyDialog
+            matter={matter}
+            onClose={() => setRemovingLocal(false)}
+            onDone={() => {
+              setRemovingLocal(false);
+              notifyDataChanged();
+              // 删除后 matters.get 为 purged：本页换成删除回执（mode = local_copy，写明负责人与同事那边保留）
+              reload();
+            }}
+          />
+        )}
+        {sharing && (
+          <AddColleaguesDialog
+            mode="share"
+            matter={matter}
+            onClose={() => setSharing(false)}
+            onDone={(text, tone) => {
+              setSharing(false);
+              // 第三轮实拍：改为团队共享后授权要重新确认——页上之前的“已记录客户授权：可以用 AI…”不再成立，清掉
+              setMsg("");
+              setShareMsg({ text, tone });
+              setTab("members");
+              reload();
+              notifyDataChanged();
+            }}
+          />
+        )}
       </div>
       {basisOpen && (
         <BasisDialog
@@ -707,30 +843,42 @@ export function MatterPage({ matterId }: { matterId: string }) {
  * 已齐备时“调整”直接给四项编辑（撤回某一项、改成不适用等）。改动都有记录。
  */
 function BasisDialog({ matter, basis, endpoint, onClose, onSave }: { matter: Matter; basis: MatterBasis; endpoint: string; onClose: () => void; onSave: (b: MatterBasis, rec: { kind: string; ref: string }) => void }) {
-  const complete = basisComplete(basis);
+  // 第二轮复评 T12（41b）：待重新确认 / 待补记出处时，事项头“去重新确认 →”打开的是与开始前确认同一张记录卡（按事项范围列出数据去向），不是四项编辑
+  const again = matter.basis_state === "reconfirm" || matter.basis_state === "needs_ref";
+  const complete = basisComplete(basis) && !again;
   const [b, setB] = useState(basis);
   const [defaults, setDefaults] = useState<AiAuthorization | null>(null);
   const [record, setRecord] = useState<AuthRecord>(() => initialRecord(null, matter));
   const [touched, setTouched] = useState(false);
   // 已有出处时沿用（调整四项也要带上出处，D-225）；没有出处时按常用条款预填，律师看到并点确认
   const [adjustRef, setAdjustRef] = useState(matter.basis_ref ?? "");
+  // 产品评分 G5-1（失败即收紧）：团队共享事项按事项范围的数据去向没读到时不能记录（与开始前确认同一判断）
+  const [authzState, setAuthzState] = useState<"loading" | "ok" | "failed">("loading");
+  const [authzTick, setAuthzTick] = useState(0);
   useEffect(() => {
+    setAuthzState("loading");
     api
-      .aiAuthorization()
+      .aiAuthorization(matter.matter_id)
       .then((a) => {
         setDefaults(a);
+        setAuthzState("ok");
         if (!touched) setRecord(initialRecord(a, matter));
         if (!matter.basis_ref && a.engagement_terms && a.default_ref) setAdjustRef((v) => v || a.default_ref || "");
       })
-      .catch(() => setDefaults(null));
+      .catch(() => {
+        setDefaults(null);
+        setAuthzState("failed");
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [authzTick]);
+  const scopeReady = authzScopeReady({ team: matter.collab_scope === "team", flows: matter.data_flows ?? defaults?.data_flows ?? null, state: authzState });
   const [detail, setDetail] = useState<MatterBasis | null>(complete ? basis : null);
   const need = confirmNeeds(basis);
   // D-225：逐项记录、调整四项都须写出处
   const ready = complete ? detailReady(adjustRef) : detail ? detailReady(record.ref) : recordReady(record, need.sensitive);
+  const scopeVersion = matter.subprocessors?.version ?? defaults?.subprocessors?.version;
   return (
-    <Modal title={complete ? "客户授权" : "记录客户授权"} onClose={onClose} wide>
+    <Modal title={complete ? "客户授权" : again ? "重新确认客户授权" : "记录客户授权"} onClose={onClose} wide>
       {complete ? (
         <>
           <p className="muted">
@@ -753,8 +901,12 @@ function BasisDialog({ matter, basis, endpoint, onClose, onSave }: { matter: Mat
             setRecord(v);
           }}
           sensitive={need.sensitive}
-          reconfirm={false}
-          processors={defaults?.subprocessors ?? null}
+          reconfirm={matter.basis_state === "reconfirm"}
+          reconfirmWhy={reconfirmReason(matter, scopeVersion)}
+          needsRef={matter.basis_state === "needs_ref"}
+          processors={matter.subprocessors ?? defaults?.subprocessors ?? null}
+          dataFlows={matter.data_flows ?? defaults?.data_flows ?? null}
+          team={matter.collab_scope === "team"}
           detail={detail}
           onDetail={setDetail}
           endpoint={endpoint}
@@ -762,10 +914,21 @@ function BasisDialog({ matter, basis, endpoint, onClose, onSave }: { matter: Mat
         />
       )}
       <div className="modal-actions">
+        {/* 13b：读不到数据去向时的原因与“重试”放在按钮旁边 */}
+        {!complete && !scopeReady.ready && scopeReady.note && (
+          <span className="authz-wait-note" role="status">
+            {scopeReady.note}
+            {scopeReady.retry && (
+              <button type="button" className="btn-link" onClick={() => setAuthzTick((t) => t + 1)}>
+                重试
+              </button>
+            )}
+          </span>
+        )}
         <button className="btn-ghost" onClick={onClose}>取消</button>
         <button
           className="btn-primary"
-          disabled={!ready}
+          disabled={!ready || (!complete && !scopeReady.ready)}
           onClick={() =>
             complete
               ? onSave(b, { kind: detailSource(record, matter), ref: adjustRef })
@@ -774,7 +937,52 @@ function BasisDialog({ matter, basis, endpoint, onClose, onSave }: { matter: Mat
                 : onSave(basisAfterConfirm(basis, { general: true, sensitive: record.sensitive }), { kind: record.kind!, ref: record.ref })
           }
         >
-          {complete ? "保存" : "记录授权"}
+          {complete ? "保存" : again ? "重新确认" : "记录授权"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/** 被负责人移出的团队共享事项：只删这台电脑上的副本（第二轮复评 T13，内核 matters.remove_local_copy）。后果三条 + 输入事项名称确认。 */
+function RemoveLocalCopyDialog({ matter, onClose, onDone }: { matter: Matter; onClose: () => void; onDone: () => void }) {
+  const [title, setTitle] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const go = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      await api.removeLocalCopy(matter.matter_id, title);
+      onDone();
+    } catch (e) {
+      setErr(teamFaultText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal title={`从我的电脑移除「${matter.title}」`} onClose={() => !busy && onClose()}>
+      <ul className="relay-lines">
+        {removeLocalCopyLines().map((l) => (
+          <li key={l}>{l}</li>
+        ))}
+      </ul>
+      <label className="field">
+        <span>输入事项名称“{matter.title}”以确认</span>
+        <input aria-label="输入事项名称以确认移除" value={title} onChange={(e) => setTitle(e.target.value)} disabled={busy} />
+      </label>
+      {err && (
+        <div className="banner banner-red" role="alert">
+          {err}
+        </div>
+      )}
+      <div className="modal-actions">
+        <button type="button" className="btn-ghost" disabled={busy} autoFocus onClick={onClose}>
+          取消
+        </button>
+        <button type="button" className="btn-danger-solid" disabled={busy || title !== matter.title} onClick={() => void go()}>
+          {busy ? "正在移除…" : "从我的电脑移除"}
         </button>
       </div>
     </Modal>
