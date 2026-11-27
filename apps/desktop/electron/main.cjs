@@ -21,6 +21,7 @@ const trialMode = require("./trial-mode.cjs");
 const { initUpdater } = require("./updater.cjs");
 const { parseSmokeArg, writeSmokeResult, SmokeFailure, sanitizeChildren, childrenFailure } = require("./smoke-io.cjs");
 const { createIdentityRestart } = require("./identity-restart.cjs");
+const { windowOptions, attachWindowState } = require("./window-state.cjs");
 const { createHandleStore, classifySaveTarget, resolveFileParams, acceptDroppedPath, insideAppData, safeSuggestedName, openableSaved, OPENABLE } = require("./file-dialogs.cjs");
 
 const DEV_SERVER = process.env.ZR_DESKTOP_DEV_URL ?? `http://127.0.0.1:${process.env.KWL_DEV_WEB_PORT ?? 5173}`;
@@ -490,6 +491,8 @@ function kernelDiagFile() {
   return f;
 }
 
+/** 第 72 批：最近一次 fork 内核的时刻（MAIN_KERNEL_READY 的耗时从这里算）。 */
+let kernelForkedAt = Date.now();
 async function startKernel() {
   const bundle = path.join(__dirname, "kernel.bundle.cjs");
   // 出站闸门（v9 第 04 篇 §5.1：独立进程、唯一出口；内核按需拉起）
@@ -497,7 +500,9 @@ async function startKernel() {
   // 以下缺省入口只用于开发形态；安装包形态的闸门与 Agent 宿主入口只来自核验过的随包运行时（release-config.cjs，复核 B4-A20）。
   // Agent 宿主（kap-host，v9 默认引擎）：开发形态从源码拉起（Node 26 原生剥离类型）
   const kapEntry = isDev ? path.join(__dirname, "../../../packages/kap-host/src/main.ts") : path.join(__dirname, "kap-host.bundle.mjs");
+  const tKey = Date.now();
   const keyResult = await loadDbKey();
+  const keyMs = Date.now() - tKey;
   if (!keyResult.ok) {
     if (smoke.out) {
       try {
@@ -539,6 +544,8 @@ async function startKernel() {
     }
   }
   kernelStopped = false;
+  const tFork = Date.now();
+  kernelForkedAt = tFork;
   kernel = utilityProcess.fork(bundle, [], {
     env: kernelChildEnv({
       packaged: app.isPackaged,
@@ -579,6 +586,8 @@ async function startKernel() {
   pendingHandoff = null;
   kernel.postMessage({ type: "kernel.init", ...(dbKey ? { dbKey } : {}), keySlot: keyPlan ? keyPlan.kind : "legacy", ...(handoff ? { handoff } : {}) });
   dbKey = null;
+  // 第 72 批（A1 §2.4 T1）：取库密钥（含密钥格整理）与 fork 各用了多久
+  slog.event("MAIN_KERNEL_SPAWNED", { key_ms: keyMs, fork_ms: Date.now() - tFork });
   kernel.on("message", (msg) => {
     if (msg && typeof msg.id === "number") {
       const resolve = pendingRpc.get(msg.id);
@@ -591,7 +600,8 @@ async function startKernel() {
     if (msg && msg.type === "kernel.ready") {
       kernelOnboarding = msg.onboarding === true;
       slog.flush();
-      slog.event("MAIN_KERNEL_READY", {});
+      // 第 72 批：ms = fork 到内核就绪（含装载 bundle、建库与迁移、法规库与方法模板、本机端点）
+      slog.event("MAIN_KERNEL_READY", { ms: Date.now() - kernelForkedAt, onboarding: kernelOnboarding });
       smoke.kernelReady(msg);
       // 内核（重新）就绪：若随包运行时全量核验已通过，告诉它可以拉起随包子进程（复核 B4-R15）
       sendRuntimeVerified();
@@ -624,7 +634,7 @@ async function startKernel() {
       fileHandles.clear();
       slog.event("MAIN_PROFILE_SWITCH", { kind: h.kind });
       // 安全复核 P-3：交接只给这一次重启；重启被跳过（应用正在退出）或拉起失败时清掉，不留给之后任意一次启动
-      void restartKernelForIdentity("正在切换账号…").finally(() => {
+      void restartKernelForIdentity("正在切换账号…", "profile").finally(() => {
         pendingHandoff = null;
       });
       return;
@@ -1072,12 +1082,20 @@ function createWindow() {
   // 应用图标（第 49 批）：打包后 Windows 用 exe 资源里的图标（build/icon.ico）、macOS 由应用包决定；未打包的开发形态显式设窗口/程序坞图标
   const devIcon = app.isPackaged ? null : path.join(__dirname, "../build", process.platform === "win32" ? "icon.ico" : "icon.png");
   if (devIcon && process.platform === "darwin") app.dock?.setIcon(devIcon);
+  // 第 72 批（D-300 第 1 条）：尺寸按所在屏幕工作区算（约 82%×86%，夹在 960～1440 × 640～900）、居中、最小 960×600 且不超过工作区；
+  // 记住上次的位置 / 尺寸 / 最大化（userData/window-state.json）；默认窗口化，只在上次是最大化时恢复最大化（electron/window-state.cjs）
+  const stateFile = path.join(app.getPath("userData"), "window-state.json");
+  const sized = windowOptions(require("electron").screen, stateFile);
   const win = new BrowserWindow({
     ...(devIcon && process.platform !== "darwin" ? { icon: devIcon } : {}),
-    width: 1440,
-    height: 900,
-    minWidth: 1080,
-    minHeight: 700,
+    x: sized.x,
+    y: sized.y,
+    width: sized.width,
+    height: sized.height,
+    minWidth: sized.minWidth,
+    minHeight: sized.minHeight,
+    // 首帧不先露一块底色：界面画好再显示（ready-to-show）；渲染进程卡住时 3 秒后照样显示，不让窗口一直不出来
+    show: false,
     title: "Kimi Work 法律行业发行版",
     ...frameOptions(require("electron").nativeTheme.shouldUseDarkColors),
     // 首帧底色随系统明暗（侧栏 --bg-sidebar 两套值）；界面里显式选了与系统相反的外观时，首帧可能闪一下另一底色
@@ -1094,6 +1112,16 @@ function createWindow() {
     },
   });
 
+  let shown = false;
+  const reveal = () => {
+    if (shown || win.isDestroyed()) return;
+    shown = true;
+    if (sized.maximized) win.maximize();
+    win.show();
+  };
+  win.once("ready-to-show", reveal);
+  setTimeout(reveal, 3000);
+  attachWindowState(win, stateFile);
   win.on("focus", () => win.flashFrame(false));
   // 试用构建：窗口标题始终带“（试用版）”（界面会改写标题以显示待处理数）
   const trial = trialConfig();
@@ -1329,15 +1357,38 @@ const identityRestart = createIdentityRestart({
     slog.event("MAIN_KERNEL_IDENTITY_RESTART_FAILED", {});
   },
 });
-async function restartKernelForIdentity(message) {
-  if (identityRestarting) return;
+/**
+ * 第 72 批（A1 H4）：重启期间再来的请求不再丢弃（原来 identityRestarting 为真时直接 return）——交给 identity-restart.cjs 排队：
+ * 本次拉起开始之后才到的，本次结束后补跑一次。返回本次（或补跑那次）的结果。
+ */
+async function restartKernelForIdentity(message, trigger = "identity") {
   identityRestarting = true;
+  const t0 = Date.now();
   try {
-    await identityRestart.restart(message);
+    const result = await identityRestart.restart(message);
+    slog.event("MAIN_KERNEL_RESTARTED", { result: result === "restarted" || result === "skipped" ? result : "failed", ms: Date.now() - t0, trigger });
+    return result;
   } finally {
-    identityRestarting = false;
+    identityRestarting = identityRestart.busy();
   }
 }
+
+/**
+ * 第 72 批（A1 H5）：界面在“还没有打开成功 / 还没有切换过去 / 后台服务没有启动起来”（E1、E5、E6）时先请主进程在应用内重拉一次内核，
+ * 不再直接让律师关闭并重新打开应用。只认应用主窗口；两次之间至少隔 15 秒（防重试风暴）；不带换账号交接（交接只给发起它的那次重启）。
+ * 结果：{ ok, result: restarted | skipped | failed } 或 { ok: false, reason: too_soon | exiting | forbidden, retry_after_ms? }
+ */
+let manualRestartAt = 0;
+const MANUAL_RESTART_MIN_GAP_MS = 15_000;
+ipcMain.handle("kwl:restart-kernel", async (e) => {
+  if (!fromAppMainFrame(e)) return { ok: false, reason: "forbidden" };
+  if (appExiting) return { ok: false, reason: "exiting" };
+  const now = Date.now();
+  if (now - manualRestartAt < MANUAL_RESTART_MIN_GAP_MS) return { ok: false, reason: "too_soon", retry_after_ms: MANUAL_RESTART_MIN_GAP_MS - (now - manualRestartAt) };
+  manualRestartAt = now;
+  const result = await restartKernelForIdentity("正在重新打开…", "manual");
+  return { ok: result === "restarted", result };
+});
 
 /**
  * 有序关闭内核（复核 B4-A13）：先请内核关闭闸门、Agent 宿主等子进程与账本，最多等 timeoutMs 再强制终止。
@@ -1347,9 +1398,10 @@ function stopKernel(timeoutMs = 8_000) {
   restart.quitting = true;
   const k = kernel;
   if (!k) return Promise.resolve();
+  const t0 = Date.now();
   return new Promise((resolve) => {
     let done = false;
-    const finish = () => {
+    const finish = (how) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
@@ -1359,14 +1411,16 @@ function stopKernel(timeoutMs = 8_000) {
         // 已退出
       }
       if (kernel === k) kernel = null;
+      // 第 72 批（A1 §2.4 T1）：关内核用了多久、是自己退出还是等满被强杀（内核不在时先暂存，新内核就绪后补交）
+      slog.event("MAIN_KERNEL_STOPPED", { ms: Date.now() - t0, how: how === "exit" ? "exit" : "timeout" });
       resolve();
     };
-    const timer = setTimeout(finish, timeoutMs);
-    k.once("exit", finish);
+    const timer = setTimeout(() => finish("timeout"), timeoutMs);
+    k.once("exit", () => finish("exit"));
     try {
       k.postMessage({ type: "kernel.shutdown" });
     } catch {
-      finish();
+      finish("exit");
     }
   });
 }

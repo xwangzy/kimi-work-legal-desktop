@@ -49,19 +49,26 @@ test("开始前确认与开始面板：登录、额度拦下时显示橙色可�
 
 const P = (o: Partial<GuideProgress> = {}): GuideProgress => ({ own_matters: 0, materials: 0, runs: 0, deliverables: 0, latest_matter_id: null, latest_run: null, ...o });
 
-test("上手清单：四步按真实数据打勾，顺序是 建事项 → 加材料 → 发起任务 → 查看成果", () => {
-  assert.deepEqual(CHECKLIST.map((c) => c.key), ["matter", "material", "task", "result"]);
+test("上手清单：按真实数据打勾，顺序是 建事项 → 加材料 → 发起任务 → 复核成果 → 备份这台电脑（第 72 批 D-302 加第五项）", () => {
+  assert.deepEqual(CHECKLIST.map((c) => c.key), ["matter", "material", "task", "result", "backup"]);
   for (const c of CHECKLIST) {
     assert.ok(c.title.length <= 10 && c.body.length <= 30, c.key);
     assert.doesNotMatch(`${c.title}${c.body}`, /执行域|出站闸门|令牌|Agent|计点|点数/);
   }
-  assert.deepEqual(checklistItems(P()).map((i) => i.done), [false, false, false, false]);
-  assert.deepEqual(checklistItems(P({ own_matters: 1, materials: 2 })).map((i) => i.done), [true, true, false, false]);
-  assert.equal(checklistCounter(checklistItems(P({ own_matters: 1, materials: 2, runs: 1 }))), "已完成 3 / 4");
+  assert.deepEqual(checklistItems(P()).map((i) => i.done), [false, false, false, false, false]);
+  assert.deepEqual(checklistItems(P({ own_matters: 1, materials: 2 })).map((i) => i.done), [true, true, false, false, false]);
+  assert.equal(checklistCounter(checklistItems(P({ own_matters: 1, materials: 2, runs: 1 }))), "已完成 3 / 5");
+  // 备份：没有材料时不点亮（之前没有可丢的数据）；有恢复包且设了备份位置才算完成
+  assert.equal(checklistItems(P()).at(-1)!.locked, true);
+  assert.equal(checklistItems(P({ own_matters: 1, materials: 1 })).at(-1)!.locked, undefined);
+  assert.equal(checklistItems(P({ materials: 1 }), { packages_created: 1, configured: true }).at(-1)!.done, true);
+  assert.equal(checklistItems(P({ materials: 1 }), { packages_created: 1, configured: false }).at(-1)!.done, false);
 });
 
 test("上手清单：“去做”直达对应界面", () => {
-  assert.deepEqual(checklistAction("matter", P()), { kind: "new_matter" });
+  // 第 72 批（D-301 合流）：第一步“建事项”= 写任务、按发送时就地新建
+  assert.deepEqual(checklistAction("matter", P()), { kind: "composer" });
+  assert.deepEqual(checklistAction("backup", P()), { kind: "nav", path: "/connections/backup" });
   assert.deepEqual(checklistAction("material", P()), { kind: "new_matter" }, "还没有事项：先建事项");
   assert.deepEqual(checklistAction("material", P({ own_matters: 1, latest_matter_id: "mat_1" })), { kind: "nav", path: "/matter/mat_1" });
   assert.deepEqual(checklistAction("task", P({ own_matters: 1 })), { kind: "composer" });
@@ -90,11 +97,12 @@ test("上手清单：第一次见到就显示；老用户（四项都已完成�
 });
 
 test("上手清单：首页渲染卡片；按“自己建的”判断（内核 guide.progress）；聚光讲解改由“看看界面”打开、不再自动弹出", () => {
-  assert.match(src("pages/Home.tsx"), /<GuideChecklist onNewMatter=\{\(\) => setNewMatter\(true\)\} \/>/);
+  // 第 72 批第二轮：展开与否由首页掌握（展开在输入框上方、收起在下方）
+  assert.match(src("pages/Home.tsx"), /<GuideChecklist onNewMatter=\{\(\) => setNewMatter\(true\)\} expanded=\{guideExpanded\} onExpanded=\{setGuideExpanded\} \/>/);
   const card = src("components/GuideChecklist.tsx");
   assert.match(card, /api\s*\.guideProgress\(\)/);
   assert.match(card, /new Event\(OPEN_GUIDE\)/);
-  assert.match(card, />\s*看看界面\s*</);
+  assert.match(card, />\s*界面导览\s*</); // 第 72 批第二轮（设计评分 C1）：“看看界面”说不清会发生什么，改“界面导览”
   assert.doesNotMatch(card, /localStorage/, "本机存储经 App.tsx 的 safeStorage（登记过的文件）");
   const app = src("App.tsx");
   assert.doesNotMatch(app, /shouldAutoOpenGuide\(/);

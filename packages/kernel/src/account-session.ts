@@ -100,7 +100,7 @@ export function dropLoginRequired(keysDir: string): void {
 
 /** 控制面答复里表示“要重新登录”的错误代码。 */
 // 第 71 批（V45，D-298）：session_signed_out = 本人在别的电脑上选了让这台退出登录；session_device_limit = 会话第一次绑这台电脑时同时登录已满
-export const SESSION_PROBLEM_CODES: ReadonlySet<string> = new Set(["session_required", "session_invalid", "session_expired", "account_disabled", "session_member_mismatch", "session_signed_out", "session_signed_out_admin", "session_signed_out_support", "session_device_limit"]);
+export const SESSION_PROBLEM_CODES: ReadonlySet<string> = new Set(["session_required", "session_invalid", "session_expired", "account_disabled", "session_member_mismatch", "session_signed_out", "session_signed_out_admin", "session_signed_out_support", "session_device_limit", "session_team_removed", "session_team_left"]);
 
 /**
  * 模型调用被法律模型网关**确定地**按身份拒绝 → 本机“要重新登录”的原因代码（第 47 批，第 46 批遗留 11）。
@@ -151,6 +151,23 @@ export function accountErrorText(code: string, fallback?: string): string {
       return fallback ?? "密码错误次数过多，请稍后再试，或找回密码";
     case "account_disabled":
       return "账号已停用，请联系律所管理员或中软客服";
+    // ─── 第 72 批：首次登记的暂时性错误、工作空间与团队（契约 02 §2～§3）───
+    case "enroll_in_progress":
+      return "这个账号正在登记另一台电脑，已自动重试几次仍没有完成：请等半分钟后再登录一次";
+    case "workspace_not_found":
+      return "没有找到这个工作空间（可能已被移出团队或已停用）：请刷新后再选";
+    case "invite_invalid":
+      return "邀请码不正确、已过期或已被使用：请向团队管理员重新获取";
+    case "already_member":
+      return "你已经是这个团队的成员：在侧栏底部的账号区切换过去即可";
+    case "upgrade_required":
+      return "个人工作室要先升级为团队，才能邀请同事";
+    case "team_only":
+      return "这项设置只有团队才有";
+    case "platform_disabled":
+      return "这个账号被中软停用，团队管理员不能启用：请联系中软客服";
+    case "last_admin":
+      return "团队至少要保留一名管理员：请先把另一位成员设为管理员";
     case "registration_closed":
       return "暂不开放自助注册，请联系中软开通";
     case "code_required":
@@ -239,6 +256,11 @@ export function accountErrorText(code: string, fallback?: string): string {
       return "客服协助让这台电脑退出了登录。资料都还在这台电脑上，重新登录即可继续";
     case "session_device_limit":
       return "这个账号同时登录的电脑已达上限：请重新登录，并选一台电脑退出登录";
+    // 第 72 批（U-1）：被移出 / 退出团队——团队空间不能再用，其他工作空间不受影响
+    case "session_team_removed":
+      return "你已被移出这个团队：团队空间不能再用了，你的其他工作空间不受影响";
+    case "session_team_left":
+      return "你已退出这个团队：团队空间不能再用了，你的其他工作空间不受影响";
     case "signout_not_allowed":
       return "这次登录不能让别的电脑退出：请重新登录后再试";
     case "signout_self":
@@ -347,7 +369,8 @@ export function onboardingStateText(state: string, o: { admin?: boolean } = {}):
       return "云端服务暂不支持在这台电脑上切换账号：请稍后重试；仍不行请联系客服";
     case "waiting_founder":
     case "needs_founder_setup":
-      return "你的律所还没有完成开通：请律所负责人先在自己的电脑上登录完成开通";
+      // 第 72 批（控制台走查）：网页上升级 / 开通的团队，创建人还没在电脑上打开过客户端时成员会到这里——说清找谁、做什么、做完怎样
+      return "你的团队还没有完成开通：请团队创建人（管理员）先在自己的电脑上打开 Kimi Work 法律版并登录一次，之后你再登录即可";
     case "needs_device_join":
       return "这个账号还没有登记这台电脑：重新登录后按提示提交登记申请，由律所管理员批准";
     // 第 66 批（V40，D-292）：个人账号的新电脑由云端直接登记（不用另一台电脑批准）；正常模式下遇到即说明换到这台电脑怎么做

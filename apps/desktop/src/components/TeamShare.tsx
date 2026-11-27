@@ -4,12 +4,17 @@
  * “重新同步成员名单”（原“本机重新引导”）只给管理员与事项负责人，用原位两步确认（不再用浏览器原生确认框）。
  */
 import { useEffect, useState } from "react";
-import { api, type RelayStatus } from "../api.ts";
+import { api, team, type DeviceShareStatus, type RelayStatus } from "../api.ts";
+import { shareConfirmLine } from "../lib/workspace.ts";
 import { canResyncMembers, relayErrorText, syncAlertAction, syncAlertSummary, syncAlertText, syncOutcomeText, teamShareLine } from "../lib/relay-text.ts";
 import { fmtTime } from "../lib/labels.ts";
 import { ConfirmButton } from "./ConfirmButton.tsx";
 
-export function TeamShare({ admin = false }: { admin?: boolean }) {
+/**
+ * 第 72 批（D-304）：note = 这台电脑由账号直接登记、还不能接收团队共享事项时的一句非阻塞提示（lib/workspace.ts shareIssuerNote）；
+ * 有提示时即使本所没开同事之间同步也显示这一行。
+ */
+export function TeamShare({ admin = false, note = null }: { admin?: boolean; note?: string | null }) {
   const [st, setSt] = useState<RelayStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
@@ -33,7 +38,19 @@ export function TeamShare({ admin = false }: { admin?: boolean }) {
         .catch(() => setOwners((o) => ({ ...o, [id]: false })));
     }
   }, [rootIds]);
-  if (!st || (st.blocked === "not_configured" && alerts.length === 0)) return null;
+  const noteLine = note ? (
+    <div className="share-note" role="note">
+      {note}
+      <ShareConfirm />
+    </div>
+  ) : null;
+  if (!st || (st.blocked === "not_configured" && alerts.length === 0))
+    return noteLine ? (
+      <div className="device-row">
+        <div className="device-k">团队共享</div>
+        <div>{noteLine}</div>
+      </div>
+    ) : null;
   const syncNow = async () => {
     setBusy(true);
     setMsg("");
@@ -74,6 +91,7 @@ export function TeamShare({ admin = false }: { admin?: boolean }) {
     <div className="device-row">
       <div className="device-k">团队共享</div>
       <div>
+        {noteLine}
         <span>{teamShareLine(st)}</span>
         {alerts.map((a) => (
           <div key={`${a.matter_id}-${a.kind}-${a.epoch}`} className="sync-alert">
@@ -126,6 +144,64 @@ export function TeamShare({ admin = false }: { admin?: boolean }) {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * 第 72 批（U-2b，D-304）：这台直接登录的电脑“申请接收团队共享事项”。申请后显示 12 位入组核对码（请管理员在团队设置 · 电脑待确认里核对后确认），可撤回；
+ * 待处理期间每 15 秒问一次内核（内核取回确认结果、核验并换上律所根签的证书后自动重新载入）。旧云端 / 旧内核没有这一步时不出现。
+ */
+function ShareConfirm() {
+  const [s, setS] = useState<DeviceShareStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    let live = true;
+    const load = () => void team.deviceShare.status().then((x) => live && setS(x)).catch(() => undefined);
+    load();
+    const t = setInterval(load, 15_000);
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
+  }, []);
+  if (!s || s.supported !== true) return null;
+  const act = async (fn: () => Promise<DeviceShareStatus>) => {
+    setBusy(true);
+    setErr("");
+    try {
+      setS(await fn());
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const line = shareConfirmLine(s);
+  const canRequest = s.state !== "pending" && s.state !== "confirmed";
+  return (
+    <div className="share-confirm">
+      {line && (
+        <p className="muted" role="status">
+          {line}
+        </p>
+      )}
+      {s.state === "pending" && s.check_code && (
+        <p>
+          入组核对码 <span className="mono members-check">{s.check_code}</span>
+          <span className="muted">（管理员确认时会请你念出这串数字）</span>
+        </p>
+      )}
+      <span className="settings-choice">
+        {canRequest && (
+          <button type="button" className="btn-primary btn-sm" disabled={busy} onClick={() => void act(() => team.deviceShare.request())}>
+            申请接收团队共享事项
+          </button>
+        )}
+        {s.state === "pending" && <ConfirmButton label="撤回申请" question="撤回这次申请？之后需要时可以重新申请。" confirmLabel="撤回" onConfirm={() => act(() => team.deviceShare.withdraw())} />}
+      </span>
+      {err && <p className="activate-error">{err}</p>}
     </div>
   );
 }

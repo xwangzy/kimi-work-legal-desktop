@@ -4,7 +4,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "./Icons.tsx";
-import { api, type ModelCatalogView, type ModelScope } from "../api.ts";
+import { api, onKernelEvent, type ModelCatalogView, type ModelScope } from "../api.ts";
 
 export interface ModelChoice {
   id: string;
@@ -84,7 +84,7 @@ export function ModelPicker({ choices, value, onChange, title = "选择模型", 
 
 /**
  * 读模型目录（第 66 批）：先读内核手里的（可能是登录前的内置兜底），不是云端版本时马上要求刷新一次；
- * 窗口重新获得焦点时再读（云端增改启停模型后，客户端不重新封装、不重启即可看到）。
+ * 窗口重新获得焦点时要求刷新（云端增改启停模型后，客户端不重新封装、不重启即可看到）。
  */
 export function useModelCatalog(scope: ModelScope, enabled = true): [ModelCatalogView | null, (f: (v: ModelCatalogView | null) => ModelCatalogView | null) => void] {
   const [view, setView] = useState<ModelCatalogView | null>(null);
@@ -101,11 +101,15 @@ export function useModelCatalog(scope: ModelScope, enabled = true): [ModelCatalo
         })
         .catch(() => live && !refresh && setView(null));
     void load(false);
-    const onFocus = () => void load(false);
+    // 第 72 批（D-299 第 6 条）：窗口重新获得焦点时真刷新（向云端取，内核按 5 秒节流），云端改了模型目录客户端不重启也能看到
+    const onFocus = () => void load(true);
     window.addEventListener("focus", onFocus);
+    // 第 72 批（F5）：云端同步恢复后重读目录（内核同时已向云端重取）
+    const offSync = onKernelEvent((m) => (m?.type === "cloud.synced" ? onFocus() : undefined));
     return () => {
       live = false;
       window.removeEventListener("focus", onFocus);
+      offSync();
     };
   }, [scope, enabled]);
   return [view, setView];

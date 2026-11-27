@@ -179,6 +179,8 @@ export interface OnboardingDeps {
    * 没有给（旧的开发桥、测试）时退化为 requestRestart（交接丢失：律师在打开的档案里再登录一次）。
    */
   requestSwitch?: (h: ProfileHandoff) => void;
+  /** 第 72 批：自动登记遇 enroll_in_progress 时重发前的等待（毫秒；用例调短）。缺省 1、2、4 秒。 */
+  enrollRetryMs?: readonly number[];
 }
 
 /** 待激活模式下的开通服务。 */
@@ -244,6 +246,8 @@ export class OnboardingService {
   private handoffResult: Record<string, unknown> | null = null;
   async resumeHandoff(h: ProfileHandoff): Promise<void> {
     if (h.kind !== "auth") return;
+    // 第 72 批（A1 H1）：上一次留下的失败记录已过时——不删的话激活页第一次轮询就报 E2，后台却还在继续登记
+    this.dropStaleFailure();
     // 进行中：激活页据此显示“正在登记这台电脑…”并等结果（登记成功会直接按新身份重启）
     this.handoffResult = { next: "working" };
     let done: (() => void) | null = null;
@@ -267,7 +271,9 @@ export class OnboardingService {
     const state = String(onb.state ?? "");
     const missing = (state === "needs_device_join" || state === "needs_founder_setup") ? !onb.claim : state === "needs_device_auto" ? !onb.device_id : false;
     if (!missing || typeof j.session_token !== "string") return j;
+    const t0 = Date.now();
     const o = await cpPost(this.d.relay, "/v1/auth/onboarding", {}, "POST", { "x-kwl-session": j.session_token });
+    slog.event("KERNEL_ONB_STEP", { step: "withclaim", ms: Date.now() - t0, ok: o.ok });
     if (!o.ok) {
       const f = accountFailure(o.code, o.message ?? null);
       throw new DomainError(f.fault, f.text, f.status, { reason: f.reason });
@@ -314,7 +320,8 @@ export class OnboardingService {
       // 第 68 批：这台电脑上别的账号的工作空间（只给个数，不列姓名：共用电脑的人看不到彼此是谁）；登录那个账号即打开
       ...(others > 0 ? { other_profiles: others } : {}),
       ...(this.handoffResult ? { handoff: this.handoffResult } : {}),
-      ...(failed ? { last_failure: failed } : {}),
+      // 第 72 批（A1 H1）：交接还在进行中时不报失败记录（这一轮的失败会写进 handoff 本身；磁盘上的只可能是上一轮留下的）
+      ...(failed && this.handoffResult?.next !== "working" ? { last_failure: failed } : {}),
       ...(setAside.length ? { set_aside: setAside } : {}),
     };
   }
@@ -375,6 +382,15 @@ export class OnboardingService {
     };
     writeProfile(this.root, rec);
     writeJsonAtomic(activationFilePath(this.root), rec);
+  }
+
+  /** 第 72 批（A1 H1）：删掉上一轮留下的失败记录（删不掉不影响这次登录）。 */
+  private dropStaleFailure(): void {
+    try {
+      rmSync(join(this.root, JOIN_FAILED_FILE), { force: true });
+    } catch {
+      // Windows 上偶发被占用：status() 在交接进行中本来也不报它
+    }
   }
 
   private restartSoon(): void {
@@ -692,13 +708,23 @@ export class OnboardingService {
     a.gen ??= generateJoinDeviceKeys();
     const { keys, signer } = a.gen;
     const proof = signer.signSync(deviceEnrollProofBytes({ tid: a.tid, aid: a.aid, sid: a.sid, deviceId: a.deviceId, signPublicKeyPem: keys.signPublicKeyPem, encPublicKeyPem: keys.encPublicKeyPem }));
-    const r = await cpPost(
-      this.d.relay,
-      "/v1/auth/devices/enroll",
-      { device_id: a.deviceId, sign_pub: keys.signPublicKeyPem, enc_pub: keys.encPublicKeyPem, proof, client: this.clientInfo(), ...(sms ? { phone: sms.phone, sms_code: sms.sms_code } : {}) },
-      "POST",
-      { "x-kwl-session": a.token },
-    );
+    const enroll = () =>
+      cpPost(
+        this.d.relay,
+        "/v1/auth/devices/enroll",
+        { device_id: a.deviceId, sign_pub: keys.signPublicKeyPem, enc_pub: keys.encPublicKeyPem, proof, client: this.clientInfo(), ...(sms ? { phone: sms.phone, sms_code: sms.sms_code } : {}) },
+        "POST",
+        { "x-kwl-session": a.token },
+      );
+    const t0 = Date.now();
+    let r = await enroll();
+    // 第 72 批（A1 H3 缩小版）：云端按账号加锁时（双击、快速重试撞上另一次登记）答 enroll_in_progress——那次请求在云端没有被处理，
+    // 用同一副密钥、同一编号短退避重试（至多 ENROLL_RETRY_MS.length 次），不再给律师看泛化的“没有完成”
+    for (let i = 0; !r.ok && TRANSIENT_ENROLL_CODES.has(r.code) && i < ENROLL_RETRY_MS.length; i++) {
+      await new Promise((res) => setTimeout(res, this.d.enrollRetryMs?.[i] ?? ENROLL_RETRY_MS[i]).unref?.());
+      r = await enroll();
+    }
+    slog.event("KERNEL_ONB_STEP", { step: "enroll", ms: Date.now() - t0, ok: r.ok });
     if (!r.ok) {
       slog.event("KERNEL_ONBOARDING_AUTO_ENROLL_FAILED", { reason: /^[a-z_]{1,40}$/.test(r.code) ? r.code : "other" });
       // 第 68 批（D-295）：登录之后、登记之前电脑数满了（另一台电脑抢先登记）——与登录时的“已满”同样处理，可就地移除一台
@@ -720,7 +746,8 @@ export class OnboardingService {
           phone_masked: r.hold.phone_masked,
           message: r.hold.sms_available ? (r.message ?? onboardingStateText("device_enroll_hold")) : "短时间内有多台新电脑登录这个账号，为安全起见已暂停自动登记。账号没有绑定手机号（或短信暂不可用）：请先在已登录的电脑上移除不认识的电脑并修改密码，24 小时后再试，或联系客服",
         };
-      const known = ["session_not_fresh", "device_auto_unavailable", "sms_phone_mismatch", "sms_code_invalid", "sms_code_expired", "sms_code_attempts"];
+      // 第 72 批：enroll_in_progress（重试几次仍在登记）也给人话，不再落到泛化的 cpErrorText
+      const known = ["session_not_fresh", "device_auto_unavailable", "sms_phone_mismatch", "sms_code_invalid", "sms_code_expired", "sms_code_attempts", "enroll_in_progress"];
       throw new DomainError(r.code.startsWith("sms_") ? "validation" : "provider_unavailable", known.includes(r.code) ? (r.message ?? accountErrorText(r.code)) : cpErrorText(r.code), r.code.startsWith("sms_") ? 400 : 502, { reason: r.code });
     }
     const o = openEnvelope<{ tid: string; device_id: string; cert: DeviceCertificate; root_public_key_pem: string; firm_bundle: FirmBundle; ca: { kid: string; public_key_pem: string } }>(r.json, "kwl-device-enroll", parsePublicKeyMap(this.d.config.env.ZR_CONTROL_PLANE_KEYS));
@@ -746,10 +773,12 @@ export class OnboardingService {
       throw new DomainError("provider_unavailable", "收到的登记结果核对不通过，没有采用。请重新登录；如反复出现请联系客服", 502);
     }
     const keysDir = this.keysDirFor(a.workspace);
+    const tw = Date.now();
     writeStagedSecret(join(keysDir, "join-approved.json"), { cert: cert!, root_public_key_pem: rootPub, recovery_public_key_pem: fb!.recovery_public_key_pem, keys, account_ca_public_key_pem: caPem });
     const role = (ROLES.includes(cert!.role as Role) ? cert!.role : a.role) as Role;
     this.writeActivation({ tid: a.tid, firm_slug: a.firmSlug, firm_name: a.firmName, member_slug: a.memberSlug, member_name: a.memberName, role, kind: "member", ...(a.deviceId !== expectedJoinDeviceId(a.firmSlug, a.memberSlug) ? { device_id: a.deviceId } : {}) }, a.workspace);
     this.autoPending = null;
+    slog.event("KERNEL_ONB_STEP", { step: "stage_write", ms: Date.now() - tw, ok: true });
     slog.event("KERNEL_ONBOARDING_AUTO_ENROLLED", {});
     this.restartSoon();
     return { kind: "member", next: "restart", auto: true, firm_check_code: firmCheckCode(a.tid, rootPub) };
@@ -846,7 +875,15 @@ export class OnboardingService {
       // 第 68 批（安全复核 P-1）：一个账号在等批准时，别的账号仍可登录回这台电脑上它自己的档案（等批准的申请原样保留）；
       // 只有“再为一个新账号登记”要先点“重新输入”
       const waiting = this.pending();
-      const j = await this.accountCall("/v1/auth/login", { ...loginBody(p), client: this.clientInfo(), account_switch: true });
+      // 第 72 批（A1 H1）：这一轮登录开始，上一轮留下的失败记录已过时（不删的话交接 / 登记还在进行时激活页就报失败）
+      this.dropStaleFailure();
+      const t0 = Date.now();
+      let j: Record<string, any>;
+      try {
+        j = await this.accountCall("/v1/auth/login", { ...loginBody(p), client: this.clientInfo(), account_switch: true });
+      } finally {
+        slog.event("KERNEL_ONB_STEP", { step: "login", ms: Date.now() - t0 });
+      }
       if (waiting) {
         const ex = this.switchToExisting(j);
         if (ex) return ex;
@@ -992,6 +1029,8 @@ export interface MembersDeps {
   keysDir: string;
   call: SignedCall | null;
   audit: (action: string, kind: string, objectId: string) => void;
+  /** 第 72 批（U-2）：确认成员电脑接收团队共享事项之后立即同步一次（设备目录随之更新）。 */
+  afterApprove?: () => Promise<unknown>;
 }
 
 /** 管理员本机记录的律所名称（与成员机兑换时的取法一致：激活记录里的名称，开发形态没有激活记录时用律所标识）。 */
@@ -1026,9 +1065,15 @@ interface JoinSnapshot {
   sign_pub: string;
   enc_pub: string;
   check_code: string;
-  /** 第 44 批：invitation = 凭邀请码入组；account = 同一账号的新设备（D-186，人工核对核对码）。 */
-  via: "invitation" | "account";
+  /**
+   * 第 44 批：invitation = 凭邀请码入组；account = 同一账号的新设备（D-186，人工核对核对码）。
+   * 第 72 批（U-2，D-304）：upgrade = 账号签发钥已登记的团队成员电脑申请接收团队共享事项（同编号、同公钥换律所根证书；批准须输入对方念出的核对码）。
+   */
+  via: "invitation" | "account" | "upgrade";
   account_email: string | null;
+  /** upgrade：账号上的姓名与律师给电脑起的名字（只作显示）。 */
+  account_name?: string | null;
+  device_name?: string | null;
 }
 
 interface LocalInvite {
@@ -1058,9 +1103,23 @@ export const membersApi = (d: MembersDeps) => {
       sign_pub: String(x.sign_pub),
       enc_pub: String(x.enc_pub),
       check_code: joinCheckCode({ tid: d.identity.tenantId, deviceId: String(x.device_id), signPublicKeyPem: String(x.sign_pub), encPublicKeyPem: String(x.enc_pub) }),
-      via: x.via === "account" ? "account" : "invitation",
+      via: x.kind === "upgrade" && x.via === "upgrade" ? "upgrade" : x.via === "account" ? "account" : "invitation",
       account_email: typeof x.account?.email === "string" ? x.account.email : null,
+      account_name: typeof x.account?.name === "string" && x.account.name.trim() ? String(x.account.name).trim().slice(0, 40) : null,
+      device_name: typeof x.device_name === "string" && x.device_name.trim() ? String(x.device_name).trim().slice(0, 20) : null,
     };
+    if (snap.via === "upgrade") {
+      // 接收团队共享事项（U-2）：设备编号须属于这位成员（dev_<律所>_<成员>，或第 2 台起 _D<n>）、角色合规；本机成员表里有这位成员时角色须一致
+      // （控制面不能借此提权）。核对码由本机按申请里的公钥独立算出；批准时须输入对方屏幕上的核对码，逐位一致才签发
+      const m = d.db.get<{ role: string; membership_id: string }>(`SELECT role, membership_id FROM memberships WHERE tenant_id = ? AND user_id = ?`, [d.identity.tenantId, `usr_${d.config.firmSlug}_${snap.member_slug}`]);
+      const base = expectedJoinDeviceId(d.config.firmSlug, snap.member_slug);
+      const tail = snap.device_id.slice(base.length);
+      // 第 72 批（U-2 风险点）：只有入组批准写下的权威成员行（membership_<成员标识>）才比对角色；“加进事项”时插入的占位行（随机编号、
+      // 角色一律 lawyer）不作数——否则先被加进事项的合伙人 / 管理员永远确认不了。申请人角色在确认行上显示给管理员核对（见 MembersAdmin）
+      const authoritative = !!m && m.membership_id === `membership_${snap.member_slug}`;
+      const ok = MEMBER_SLUG_PATTERN.test(snap.member_slug) && ROLES.includes(snap.role) && snap.device_id.startsWith(base) && (tail === "" || /^_D(?:[2-9]|[1-9]\d{1,2})$/.test(tail)) && (!authoritative || ROLE_OF_MEMBERSHIP[m!.role] === snap.role);
+      return { local: undefined, snap, verified: ok };
+    }
     if (snap.via === "account") {
       // 账号新设备（D-186）：成员须是本所已有成员、角色与本机记录一致（控制面不能借此提权）、设备编号属于这位成员（_D2～_D9）
       const m = d.db.get<{ role: string }>(`SELECT role FROM memberships WHERE tenant_id = ? AND user_id = ?`, [d.identity.tenantId, `usr_${d.config.firmSlug}_${snap.member_slug}`]);
@@ -1093,6 +1152,45 @@ export const membersApi = (d: MembersDeps) => {
   };
   const inviteOf = (activationId: string) =>
     d.db.get<LocalInvite>(`SELECT activation_id, member_slug, role, display_name, invite_secret, status FROM member_invitations WHERE activation_id = ? AND tenant_id = ?`, [activationId, d.identity.tenantId]);
+  /**
+   * 第 72 批（U-2，D-304）：确认成员电脑接收团队共享事项——须输入对方屏幕上的 12 位核对码、与本机按申请公钥算出的逐位一致；
+   * 用律所根签发证书（字段与新入组一致：同一设备编号、申请里的两把公钥、本所成员编号与申请角色）。不需要律所公钥包与批准核对段。
+   */
+  const approveUpgrade = async (call: SignedCall, snap: JoinSnapshot, typed: unknown): Promise<Record<string, unknown>> => {
+    const digits = (v: unknown) => (typeof v === "string" ? v.replace(/[\s-]/g, "") : "");
+    if (!/^\d{12}$/.test(digits(typed))) throw new DomainError("validation", "请输入对方屏幕上的 12 位入组核对码", 400);
+    if (digits(typed) !== digits(snap.check_code)) throw new DomainError("conflict", "入组核对码不一致：不要确认。请让对方重新念一遍；仍不一致请点“拒绝”，并联系 Kimi Work 客服", 409, { reason: "check_code_mismatch" });
+    let root: { publicKeyPem: string; privateKeyPem: string };
+    try {
+      root = getFirmRootPrivateKey(d.keysDir);
+    } catch {
+      throw new DomainError("forbidden", "这台电脑不能确认（需要在团队开通时的那台电脑上操作）", 409);
+    }
+    const userId = `usr_${d.config.firmSlug}_${snap.member_slug}`;
+    const now = Date.now();
+    const cert = issueDeviceCertificate(root.privateKeyPem, {
+      certId: `cert_${snap.device_id}_${now.toString(36)}`,
+      memberId: userId,
+      deviceId: snap.device_id,
+      role: snap.role as DeviceRole,
+      signPublicKeyPem: snap.sign_pub,
+      encPublicKeyPem: snap.enc_pub,
+      issuedAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + 365 * 24 * 3600 * 1000).toISOString(),
+    });
+    const r = await call("POST", `/v1/join-requests/${snap.id}/approve`, { cert });
+    if (!r.ok) cpFail(r);
+    d.db.run(`INSERT OR IGNORE INTO memberships (membership_id, tenant_id, user_id, role) VALUES (?, ?, ?, ?)`, [`membership_${snap.member_slug}`, d.identity.tenantId, userId, MEMBERSHIP_ROLE[snap.role]]);
+    // 第 72 批：本机已有“加进事项”时插入的占位行（随机编号、角色 lawyer）——管理员核对过申请人角色后，按批准的角色更正
+    d.db.run(`UPDATE memberships SET role = ? WHERE tenant_id = ? AND user_id = ? AND membership_id <> ?`, [MEMBERSHIP_ROLE[snap.role], d.identity.tenantId, userId, `membership_${snap.member_slug}`]);
+    if (snap.account_name) d.db.run(`INSERT OR IGNORE INTO users (user_id, tenant_id, display_name) VALUES (?, ?, ?)`, [userId, d.identity.tenantId, snap.account_name]);
+    snapshots.delete(snap.id);
+    attentionCache = null;
+    d.audit("member.device_share_approve", "device", snap.device_id);
+    // 设备目录随之更新：立即同步一次，本机设备表即含这台电脑（团队共享事项的密钥此后可包给它）
+    await d.afterApprove?.().catch(() => undefined);
+    return { ok: true, status: "approved", kind: "upgrade" };
+  };
   return {
     /** 邀请成员：本机生成邀请码的秘密段（不经控制面）并记下成员与角色，再向中软申请一次性的控制面码；两段拼成 36 位邀请码，只显示这一次。 */
     async invite(p: { name?: unknown; role?: unknown }): Promise<Record<string, unknown>> {
@@ -1132,11 +1230,13 @@ export const membersApi = (d: MembersDeps) => {
         const { local, snap, verified } = checkJoin(x);
         if (verified) snapshots.set(snap.id, snap);
         // 账号新电脑：本机成员表的姓名；本机记的只是成员标识（创始管理员的旧记录）时，用控制面账号上的姓名（第 47 批真实走查：显示成了“admin”）
-        const localName = snap.via === "account" ? (d.db.get<{ display_name: string }>(`SELECT display_name FROM users WHERE tenant_id = ? AND user_id = ?`, [d.identity.tenantId, `usr_${d.config.firmSlug}_${snap.member_slug}`])?.display_name ?? null) : null;
+        const localName = snap.via === "account" || snap.via === "upgrade" ? (d.db.get<{ display_name: string }>(`SELECT display_name FROM users WHERE tenant_id = ? AND user_id = ?`, [d.identity.tenantId, `usr_${d.config.firmSlug}_${snap.member_slug}`])?.display_name ?? null) : null;
         const accountName = typeof x.account?.name === "string" && x.account.name.trim() ? String(x.account.name).trim().slice(0, 40) : null;
-        const memberName = snap.via === "account" ? (localName && localName !== snap.member_slug ? localName : (accountName ?? localName)) : null;
+        const memberName = snap.via === "account" || snap.via === "upgrade" ? (localName && localName !== snap.member_slug && localName !== `usr_${d.config.firmSlug}_${snap.member_slug}` ? localName : (accountName ?? localName)) : null;
         return {
           id: snap.id,
+          // 第 72 批（U-2）：kind = upgrade 时是“<姓名> 的 <电脑名> 申请接收团队共享事项”
+          ...(snap.via === "upgrade" ? { kind: "upgrade", device_name: snap.device_name ?? null } : {}),
           name: local?.display_name ?? memberName,
           role: local?.role ?? snap.role,
           requested_at: x.created_at,
@@ -1145,7 +1245,7 @@ export const membersApi = (d: MembersDeps) => {
           via: snap.via,
           account_email: snap.account_email,
           // 本机没有发过这个邀请（例如另一台管理员设备发出）：不能在这台电脑上批准
-          local_invite: !!local || snap.via === "account",
+          local_invite: !!local || snap.via === "account" || snap.via === "upgrade",
           // 申请在传送中被改动过（HMAC、设备编号或角色核对不通过）：不要批准
           verified,
         };
@@ -1182,11 +1282,12 @@ export const membersApi = (d: MembersDeps) => {
     },
 
     /** 批准：只用列表时核对过的快照（复核 A-01）；成员编号与角色取本机邀请记录；证书 + 律所公钥包 + 用秘密段对批准结果做的 HMAC。 */
-    async approve(p: { join_request_id?: unknown }): Promise<Record<string, unknown>> {
+    async approve(p: { join_request_id?: unknown; check_code?: unknown }): Promise<Record<string, unknown>> {
       const call = requireCp(d);
       const id = String(p.join_request_id ?? "");
       const snap = snapshots.get(id);
       if (!snap) throw new DomainError("conflict", "请先刷新成员页、核对数字后再批准（只能批准核对通过的申请）", 409);
+      if (snap.via === "upgrade") return approveUpgrade(call, snap, p.check_code);
       const viaAccount = snap.via === "account";
       const local = viaAccount ? undefined : inviteOf(snap.activation_id);
       if (!viaAccount && (!local || local.status !== "open" || local.member_slug !== snap.member_slug || local.role !== snap.role)) throw new DomainError("conflict", "这个邀请已处理过，或不是在这台电脑上发出的", 409);
@@ -1343,6 +1444,10 @@ export function registrationInviteInput(input: unknown): { code: string; secret:
 }
 
 const JOIN_FAILED_FILE = "onboarding-failed.json";
+/** 第 72 批（A1 H3 缩小版）：自动登记时云端答这些码 = 请求没有被处理，可以原样重发。 */
+const TRANSIENT_ENROLL_CODES: ReadonlySet<string> = new Set(["enroll_in_progress"]);
+/** 重发前等多久（毫秒）：1 秒、2 秒、4 秒，至多 3 次（云端按账号加锁，另一次登记通常 1 秒内结束）。 */
+const ENROLL_RETRY_MS: readonly number[] = [1_000, 2_000, 4_000];
 const PENDING_ACTIVATION_FILE = "activation.pending.json";
 
 /**

@@ -3,11 +3,15 @@
  * 审合同时，审查工作台的卡片会列出“本所范本对此条的写法”，可照着改。存在这台电脑，不同步；范本库本身不发给 AI，
  * 但照着改并接受的文字、放进事项的范本，会和事项里其他内容一样随任务发出（复核 Q6-02、Q6-06，界面如实写明）。
  * 放入时内核逐条查像客户信息的写法；查到的列给律师看，可以取消去改原文件，也可以一键换成【】占位符再放入。
+ * 第 72 批（D-305 第 5 条，A3 D4）：个人空间叫“我的范本”（个人没有“本所”）；团队空间仍叫“本所范本”，并写明只存这台电脑、不同步给同事。
  */
 import { useEffect, useRef, useState } from "react";
 import { api, type FirmTemplate, type FirmTemplateAddResult } from "../api.ts";
 import { fmtDate } from "../lib/labels.ts";
+import { templatesLabel } from "../lib/workspace.ts";
 import { ConfirmButton } from "./ConfirmButton.tsx";
+import { useWorkspace } from "./WorkspaceSwitch.tsx";
+import { Icon } from "./Icons.tsx";
 import { Modal } from "./Modal.tsx";
 import { Select } from "./Select.tsx";
 
@@ -31,11 +35,16 @@ export function FirmTemplates() {
   useEffect(load, []);
   const groups = new Map<string, FirmTemplate[]>();
   for (const t of list ?? []) groups.set(t.contract_type, [...(groups.get(t.contract_type) ?? []), t]);
+  const ws = useWorkspace();
+  const label = templatesLabel(ws.kind);
+  const personal = ws.kind === "personal";
   return (
-    <section aria-label="本所范本" id="firm-templates">
-      <div className="section-title">本所范本</div>
-      <p className="muted">
-        放入本所常用的合同范本（去掉客户信息）。审合同时，工作台的每张卡片会列出“本所范本对此条的写法”，可以照着改。范本存在这台电脑上，这台电脑上的同事都能看到；范本库本身不发给 AI，但你照着改并接受的文字、放进事项的范本，会和事项里其他内容一样随任务发给 AI。
+    <section aria-label={label.short} id="firm-templates">
+      <div className="section-title">{label.short}</div>
+      {/* 第 72 批评分 C17：说明压成一句（存哪、什么会发给 AI），动作放在说明之前的视觉重心 */}
+      <p className="muted ft-lead">
+        {personal ? "审合同时，工作台会列出你范本里对应条款的写法。" : "审合同时，工作台会列出本所范本里对应条款的写法。"}
+        范本只存在这台电脑{personal ? "" : "、不同步给同事"}；范本库本身不发给 AI，被你采用的条款和放进事项的范本会随任务发给 AI。
       </p>
       {msg && <div className="banner banner-red">{msg}</div>}
       {note && (
@@ -46,7 +55,16 @@ export function FirmTemplates() {
       {list === null ? (
         <p className="muted">载入中…</p>
       ) : list.length === 0 ? (
-        <p className="muted">还没有范本。</p>
+        <div className="ft-empty">
+          <span className="ft-empty-ico" aria-hidden="true">
+            <Icon.book />
+          </span>
+          <b>{personal ? "还没有你的范本" : "还没有本所范本"}</b>
+          <p className="muted">放入常用的合同范本（去掉客户信息），审合同时就能照着改。支持 .docx、.txt，也可以直接粘贴正文。</p>
+          <button className="btn-primary btn-sm" onClick={() => setAdding(true)}>
+            放入第一份范本
+          </button>
+        </div>
       ) : (
         <table className="data ft-table">
           <thead>
@@ -95,11 +113,13 @@ export function FirmTemplates() {
           </tbody>
         </table>
       )}
-      <div className="settings-choice">
-        <button className="btn-ghost btn-sm" onClick={() => setAdding(true)}>
-          放入范本…
-        </button>
-      </div>
+      {list !== null && list.length > 0 && (
+        <div className="settings-choice">
+          <button className="btn-ghost btn-sm" onClick={() => setAdding(true)}>
+            放入范本…
+          </button>
+        </div>
+      )}
       {adding && (
         <AddTemplate
           types={types}

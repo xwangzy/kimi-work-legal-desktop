@@ -67,6 +67,8 @@ test("主进程：先放行闸门（scope gate）再全量；记录核对耗时�
   const main = src("electron/main.cjs");
   assert.match(main, /verifyRuntimeDigests\(path\.join\(process\.resourcesPath, "runtime"\), manifest, \{\s*first,\s*onFirst: \(\) => \{\s*gateVerifiedOk = true;/);
   assert.match(main, /else if \(gateVerifiedOk\) kernel\.postMessage\(\{ type: "kernel\.runtime_verified", scope: "gate" \}\);/);
+  // 第 72 批（安全审查 09 P2-6）：不再把闸门 Node 的元数据交给内核免算摘要（内核每次拉起闸门前都完整核验）
+  assert.doesNotMatch(main, /gate_node|gateNodeStamp/);
   assert.match(main, /slog\.event\("MAIN_RUNTIME_VERIFIED", \{ scope: "gate"/);
   assert.match(main, /if \(process\.platform === "darwin"\) return \{ titleBarStyle: "hidden", trafficLightPosition: \{ x: 18, y: 14 \} \};/);
   assert.match(main, /if \(process\.platform === "win32"\) return \{ titleBarStyle: "hidden", titleBarOverlay: \{ \.\.\.WINDOW_CHROME\[dark \? "dark" : "light"\], height: TITLEBAR_HEIGHT \} \};/);
@@ -138,6 +140,7 @@ test("整窗重新登录：标题按原因、可见“你已退出登录”；�
   const relogin = src("src/pages/Relogin.tsx");
   assert.match(relogin, /<AuthPage kind="relogin">/);
   // 第 69 批：缺省预填上次账号的邮箱；“换个账号”或这台电脑已从账号移除时清空预填（登录框按 key 重新挂载）
-  assert.match(relogin, /<LoginBox key=\{other \|\| revoked \? "other" : "me"\} page subtle email=\{other \|\| revoked \? "" : p\.email\} knownPhone=\{acct === undefined \? undefined : acct\.phone\} onDone=\{p\.onDone\} \/>/);
+  // 第 72 批（评分 C16）：被移出 / 退出团队时本机没记到打码号也先按“只填验证码”显示（knownPhone 传 undefined），其余不变
+  assert.match(relogin, /<LoginBox\s+key=\{other \|\| revoked \? "other" : "me"\}\s+page\s+subtle\s+email=\{other \|\| revoked \? "" : p\.email\}[\s\S]{0,200}knownPhone=\{acct === undefined \|\| \(teamGone && acct\.phone === null\) \? undefined : acct\.phone\}\s+onDone=\{p\.onDone\}\s+\/>/);
   assert.doesNotMatch(relogin.replace(/\/\*[\s\S]*?\*\//g, ""), /register|注册/i, "重新登录页不能注册新账号");
 });
